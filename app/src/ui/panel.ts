@@ -1,4 +1,5 @@
 import type { AquariumSettings, CornerRadii } from '../model/settings';
+import { insetProfile, topViewPath } from '../model/profile';
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings } from '../model/settings';
 
 export type SelectedCorner = keyof CornerRadii;
@@ -113,6 +114,7 @@ export class ControlPanel {
             <div class="corner-canvas-wrap">
               <svg id="corner-preview" viewBox="0 0 240 150" role="img" aria-label="Interactive top view of aquarium corner rounding">
                 <path id="corner-preview-path"></path>
+                <path id="corner-preview-inner-path"></path>
                 <g class="corner-hotspot" data-corner="backLeft"><circle r="12"></circle><text>BL</text></g>
                 <g class="corner-hotspot" data-corner="backRight"><circle r="12"></circle><text>BR</text></g>
                 <g class="corner-hotspot" data-corner="frontLeft"><circle r="12"></circle><text>FL</text></g>
@@ -348,6 +350,7 @@ export class ControlPanel {
 
     const preview = this.root.querySelector<SVGSVGElement>('#corner-preview')!;
     const path = this.root.querySelector<SVGPathElement>('#corner-preview-path')!;
+    const innerPath = this.root.querySelector<SVGPathElement>('#corner-preview-inner-path')!;
     const availableWidth = 188;
     const availableHeight = 98;
     const ratio = this.settings.width / this.settings.depth;
@@ -355,33 +358,28 @@ export class ControlPanel {
     const height = ratio > availableWidth / availableHeight ? availableWidth / ratio : availableHeight;
     const left = (240 - width) * 0.5;
     const top = 18 + (availableHeight - height) * 0.5;
-    const scale = width / this.settings.width;
-    const radius = {
-      frontLeft: Math.min(width * 0.48, this.settings.radii.frontLeft * scale),
-      frontRight: Math.min(width * 0.48, this.settings.radii.frontRight * scale),
-      backRight: Math.min(width * 0.48, this.settings.radii.backRight * scale),
-      backLeft: Math.min(width * 0.48, this.settings.radii.backLeft * scale),
+    const layout = { left, top, width, height };
+    path.setAttribute('d', topViewPath(this.settings.width, this.settings.depth, this.settings.radii, layout).d);
+
+    const innerFootprint = insetProfile(
+      this.settings.width,
+      this.settings.depth,
+      this.settings.radii,
+      this.settings.glassThickness,
+    );
+    const innerLayout = {
+      left: left + this.settings.glassThickness * (width / this.settings.width),
+      top: top + this.settings.glassThickness * (height / this.settings.depth),
+      width: width - this.settings.glassThickness * 2 * (width / this.settings.width),
+      height: height - this.settings.glassThickness * 2 * (height / this.settings.depth),
     };
-    const right = left + width;
-    const bottom = top + height;
-    path.setAttribute('d', [
-      `M ${left + radius.backLeft} ${top}`,
-      `L ${right - radius.backRight} ${top}`,
-      `Q ${right} ${top} ${right} ${top + radius.backRight}`,
-      `L ${right} ${bottom - radius.frontRight}`,
-      `Q ${right} ${bottom} ${right - radius.frontRight} ${bottom}`,
-      `L ${left + radius.frontLeft} ${bottom}`,
-      `Q ${left} ${bottom} ${left} ${bottom - radius.frontLeft}`,
-      `L ${left} ${top + radius.backLeft}`,
-      `Q ${left} ${top} ${left + radius.backLeft} ${top}`,
-      'Z',
-    ].join(' '));
+    innerPath.setAttribute('d', topViewPath(innerFootprint.width, innerFootprint.depth, innerFootprint.radii, innerLayout).d);
 
     const positions: Record<SelectedCorner, [number, number]> = {
       backLeft: [left + 8, top + 8],
-      backRight: [right - 8, top + 8],
-      frontLeft: [left + 8, bottom - 8],
-      frontRight: [right - 8, bottom - 8],
+      backRight: [left + width - 8, top + 8],
+      frontLeft: [left + 8, top + height - 8],
+      frontRight: [left + width - 8, top + height - 8],
     };
     preview.querySelectorAll<SVGGElement>('[data-corner]').forEach((element) => {
       const corner = element.dataset.corner as SelectedCorner;

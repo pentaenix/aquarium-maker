@@ -1,12 +1,16 @@
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import {
+  fitFootprint,
+  fitRadii,
+  insetFootprint,
+  insetProfile,
+  offsetRadii,
+  scaleRadii,
+  type Footprint,
+} from './profile';
 import type { AquariumSettings, CornerRadii } from './settings';
 import { createSandTexture, createWaterTextures } from './textures';
-
-interface Dimensions {
-  width: number;
-  depth: number;
-}
 
 export interface AquariumBuild {
   group: THREE.Group;
@@ -15,53 +19,12 @@ export interface AquariumBuild {
   dispose: () => void;
 }
 
-function fitRadii(width: number, depth: number, radii: CornerRadii): CornerRadii {
-  const values = {
-    frontLeft: Math.max(0.002, radii.frontLeft),
-    frontRight: Math.max(0.002, radii.frontRight),
-    backRight: Math.max(0.002, radii.backRight),
-    backLeft: Math.max(0.002, radii.backLeft),
-  };
-  const scale = Math.min(
-    1,
-    width / Math.max(0.0001, values.frontLeft + values.frontRight),
-    width / Math.max(0.0001, values.backLeft + values.backRight),
-    depth / Math.max(0.0001, values.frontLeft + values.backLeft),
-    depth / Math.max(0.0001, values.frontRight + values.backRight),
-  );
-  return {
-    frontLeft: values.frontLeft * scale,
-    frontRight: values.frontRight * scale,
-    backRight: values.backRight * scale,
-    backLeft: values.backLeft * scale,
-  };
-}
-
-function scaleRadii(radii: CornerRadii, scale: number): CornerRadii {
-  return {
-    frontLeft: Math.max(0.002, radii.frontLeft * scale),
-    frontRight: Math.max(0.002, radii.frontRight * scale),
-    backRight: Math.max(0.002, radii.backRight * scale),
-    backLeft: Math.max(0.002, radii.backLeft * scale),
-  };
-}
-
-function offsetRadii(radii: CornerRadii, amount: number): CornerRadii {
-  return {
-    frontLeft: Math.max(0.002, radii.frontLeft + amount),
-    frontRight: Math.max(0.002, radii.frontRight + amount),
-    backRight: Math.max(0.002, radii.backRight + amount),
-    backLeft: Math.max(0.002, radii.backLeft + amount),
-  };
-}
-
 function roundedPath(
   width: number,
   depth: number,
-  inputRadii: CornerRadii,
+  radii: CornerRadii,
   clockwise: boolean,
 ): THREE.Path {
-  const radii = fitRadii(width, depth, inputRadii);
   const halfWidth = width * 0.5;
   const halfDepth = depth * 0.5;
   const path = new THREE.Path();
@@ -91,22 +54,22 @@ function roundedPath(
 }
 
 function solidShape(width: number, depth: number, radii: CornerRadii): THREE.Shape {
-  const path = roundedPath(width, depth, radii, false);
+  const fitted = fitRadii(width, depth, radii);
+  const path = roundedPath(width, depth, fitted, false);
   const shape = new THREE.Shape();
   shape.curves = path.curves;
   shape.currentPoint.copy(path.currentPoint);
   return shape;
 }
 
-function ringShape(
-  outer: Dimensions,
-  outerRadii: CornerRadii,
-  inner: Dimensions,
-  innerRadii: CornerRadii,
-): THREE.Shape {
-  const shape = solidShape(outer.width, outer.depth, outerRadii);
-  shape.holes.push(roundedPath(inner.width, inner.depth, innerRadii, true));
-  return shape;
+function ringShape(outer: Footprint, inset: number): THREE.Shape {
+  const inner = insetFootprint(outer, inset);
+  const shape = roundedPath(outer.width, outer.depth, outer.radii, false);
+  const ring = new THREE.Shape();
+  ring.curves = shape.curves;
+  ring.currentPoint.copy(shape.currentPoint);
+  ring.holes.push(roundedPath(inner.width, inner.depth, inner.radii, true));
+  return ring;
 }
 
 function planarUVs(geometry: THREE.BufferGeometry, width: number, depth: number): void {
@@ -250,45 +213,34 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     openTop: true,
   };
 
-  const bodyRadii = fitRadii(settings.width, settings.depth, settings.radii);
-  const glassOuter = { width: settings.width, depth: settings.depth };
-  const glassInner = {
-    width: settings.width - settings.glassThickness * 2,
-    depth: settings.depth - settings.glassThickness * 2,
-  };
-  const glassInnerRadii = offsetRadii(bodyRadii, -settings.glassThickness);
+  const bodyFootprint = fitFootprint(settings.width, settings.depth, settings.radii);
+  const bodyRadii = bodyFootprint.radii;
 
-  const baseOuter = {
-    width: settings.width + settings.baseOverhang * 2,
-    depth: settings.depth + settings.baseOverhang * 2,
-  };
-  const baseRadii = offsetRadii(bodyRadii, settings.baseOverhang);
+  const baseOuter = fitFootprint(
+    settings.width + settings.baseOverhang * 2,
+    settings.depth + settings.baseOverhang * 2,
+    offsetRadii(bodyRadii, settings.baseOverhang),
+  );
 
-  const frameOuter = {
-    width: settings.width + settings.frameOverhang * 2,
-    depth: settings.depth + settings.frameOverhang * 2,
-  };
   const subtleRimRadii = scaleRadii(bodyRadii, settings.rimRoundness);
-  const frameOuterRadii = offsetRadii(subtleRimRadii, settings.frameOverhang);
-  const frameInner = {
-    width: settings.width - settings.frameOverlap * 2,
-    depth: settings.depth - settings.frameOverlap * 2,
-  };
-  const frameInnerRadii = offsetRadii(subtleRimRadii, -settings.frameOverlap);
+  const frameOuter = fitFootprint(
+    settings.width + settings.frameOverhang * 2,
+    settings.depth + settings.frameOverhang * 2,
+    offsetRadii(subtleRimRadii, settings.frameOverhang),
+  );
 
-  const sandInset = settings.glassThickness + settings.sandWallGap;
-  const sandDimensions = {
-    width: settings.width - sandInset * 2,
-    depth: settings.depth - sandInset * 2,
-  };
-  const sandRadii = offsetRadii(bodyRadii, -sandInset);
-
-  const waterInset = settings.glassThickness + settings.waterWallGap;
-  const waterDimensions = {
-    width: settings.width - waterInset * 2,
-    depth: settings.depth - waterInset * 2,
-  };
-  const waterRadii = offsetRadii(bodyRadii, -waterInset);
+  const sandProfile = insetProfile(
+    settings.width,
+    settings.depth,
+    settings.radii,
+    settings.glassThickness + settings.sandWallGap,
+  );
+  const waterProfile = insetProfile(
+    settings.width,
+    settings.depth,
+    settings.radii,
+    settings.glassThickness + settings.waterWallGap,
+  );
 
   const baseTop = settings.baseHeight;
   const topRimBottom = settings.height - settings.topRimHeight;
@@ -392,27 +344,17 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   addMesh(
     'STRUCTURE_BasePlinth',
-    extrude(solidShape(baseOuter.width, baseOuter.depth, baseRadii), settings.baseHeight, 0, settings.curveSegments),
+    extrude(solidShape(baseOuter.width, baseOuter.depth, baseOuter.radii), settings.baseHeight, 0, settings.curveSegments),
     baseMaterial,
   );
   addMesh(
     'STRUCTURE_BottomRim',
-    extrude(
-      ringShape(frameOuter, frameOuterRadii, frameInner, frameInnerRadii),
-      settings.bottomRimHeight,
-      baseTop,
-      settings.curveSegments,
-    ),
+    extrude(ringShape(frameOuter, settings.frameOverlap), settings.bottomRimHeight, baseTop, settings.curveSegments),
     frameMaterial,
   );
   const glassMesh = addMesh(
     'GLASS_AcrylicShell',
-    extrude(
-      ringShape(glassOuter, bodyRadii, glassInner, glassInnerRadii),
-      glassTop - glassBottom,
-      glassBottom,
-      settings.curveSegments,
-    ),
+    extrude(ringShape(bodyFootprint, settings.glassThickness), glassTop - glassBottom, glassBottom, settings.curveSegments),
     glassMaterial,
     false,
     false,
@@ -422,11 +364,11 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   addMesh(
     'INTERIOR_SandFloor',
     extrude(
-      solidShape(sandDimensions.width, sandDimensions.depth, sandRadii),
+      solidShape(sandProfile.width, sandProfile.depth, sandProfile.radii),
       settings.sandHeight,
       sandBottom,
       settings.curveSegments,
-      sandDimensions,
+      sandProfile,
     ),
     sandMaterial,
     false,
@@ -436,9 +378,9 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const waterVolume = addMesh(
     'WATER_Volume',
     openSideWall(
-      waterDimensions.width,
-      waterDimensions.depth,
-      waterRadii,
+      waterProfile.width,
+      waterProfile.depth,
+      waterProfile.radii,
       waterBottom,
       waterTop - 0.002,
       settings.curveSegments,
@@ -451,13 +393,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   const waterSurface = addMesh(
     'WATER_Surface',
-    flatSurface(
-      waterDimensions.width,
-      waterDimensions.depth,
-      waterRadii,
-      waterTop,
-      settings.curveSegments,
-    ),
+    flatSurface(waterProfile.width, waterProfile.depth, waterProfile.radii, waterTop, settings.curveSegments),
     waterSurfaceMaterial,
     false,
     false,
@@ -466,12 +402,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   addMesh(
     'STRUCTURE_TopRim',
-    extrude(
-      ringShape(frameOuter, frameOuterRadii, frameInner, frameInnerRadii),
-      settings.topRimHeight,
-      topRimBottom,
-      settings.curveSegments,
-    ),
+    extrude(ringShape(frameOuter, settings.frameOverlap), settings.topRimHeight, topRimBottom, settings.curveSegments),
     frameMaterial,
   );
 
