@@ -1,12 +1,13 @@
 {
-  "name": "aquarium-studio",
+  "name": "aquarium-maker",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "build": "tsc --noEmit && vite build && node scripts/sync-build.mjs && node scripts/make-standalone.mjs",
+    "preview": "vite preview",
+    "check": "tsc --noEmit && vite build"
   },
   "dependencies": {
     "three": "^0.185.1"

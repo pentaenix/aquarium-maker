@@ -1,12 +1,23 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  // Relative assets make the same build work at username.github.io,
-  // username.github.io/repository-name, and custom domains.
+  root: 'app',
+  publicDir: 'public',
+  // Relative URLs work on a custom domain, a GitHub project page, /docs,
+  // the included static archive, and the generated standalone page.
   base: './',
   build: {
-    target: 'es2022',
+    outDir: '../dist',
+    emptyOutDir: true,
+    target: 'es2020',
     sourcemap: false,
     chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/app.js',
+        assetFileNames: (assetInfo) => assetInfo.name?.endsWith('.css') ? 'assets/app.css' : 'assets/[name][extname]',
+        chunkFileNames: 'assets/[name].js',
+      },
+    },
   },
 });

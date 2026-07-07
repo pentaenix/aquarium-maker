@@ -6,20 +6,20 @@
     <meta name="theme-color" content="#edf2f4" />
     <meta name="description" content="Design, preview, and export a game-ready public aquarium directly in your browser." />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <title>Aquarium Studio</title>
-    <script type="module" crossorigin src="./assets/index-B9e-JyHm.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DpbnVEmR.css">
+    <title>Aquarium Maker</title>
+    <script type="module" crossorigin src="./assets/app.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/app.css">
   </head>
   <body>
     <div id="app">
       <header class="topbar">
-        <div class="brand" aria-label="Aquarium Studio">
+        <div class="brand" aria-label="Aquarium Maker">
           <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
             <rect x="4" y="7" width="24" height="18" rx="5" />
             <path d="M6 18c5-3 9 3 14 0 3-2 5-1 7 0" />
           </svg>
           <div>
-            <strong>Aquarium Studio</strong>
+            <strong>Aquarium Maker</strong>
             <span>Game-ready GLB generator</span>
           </div>
         </div>
@@ -42,6 +42,10 @@
       <main class="workspace">
         <section class="viewport" aria-label="Interactive aquarium preview">
           <canvas id="viewer"></canvas>
+          <div class="viewer-error" id="viewer-error" hidden>
+            <strong>3D preview unavailable</strong>
+            <span>This browser could not start WebGL. Hardware acceleration may be disabled.</span>
+          </div>
           <div class="viewer-hint" id="viewer-hint">Drag to orbit · Scroll to zoom</div>
           <div class="viewer-toolbar" role="toolbar" aria-label="Camera controls">
             <button type="button" data-view="iso" class="is-active" title="Isometric view">Iso</button>
@@ -53,7 +57,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4" /></svg>
             </button>
           </div>
-          <div class="viewer-badge">Preview uses authored meters</div>
+          <div class="viewer-badge" id="scale-badge">Preview in meters · export 10×</div>
         </section>
 
         <aside class="panel" aria-label="Aquarium settings">
@@ -62,7 +66,7 @@
             <div class="export-name-row">
               <label for="file-name">File name</label>
               <div class="file-input-wrap">
-                <input id="file-name" type="text" value="public-aquarium" spellcheck="false" autocomplete="off" />
+                <input id="file-name" type="text" value="aquarium" spellcheck="false" autocomplete="off" />
                 <span>.glb</span>
               </div>
             </div>
