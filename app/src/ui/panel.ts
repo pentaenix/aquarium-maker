@@ -1,7 +1,10 @@
-import type { AquariumSettings, CornerRadii } from '../model/settings';
+import * as THREE from 'three';
+import type { AquariumSettings, CornerMode, CornerRadii } from '../model/settings';
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings } from '../model/settings';
+import { createFootprintLoop, offsetRadii } from '../model/aquarium';
 
 export type SelectedCorner = keyof CornerRadii;
+type PanelTab = 'tank' | 'shape' | 'water' | 'tunnel' | 'details';
 
 export interface PanelCallbacks {
   onChange: (settings: AquariumSettings, structural: boolean) => void;
@@ -22,14 +25,19 @@ interface RangeDefinition {
   format?: (value: number) => string;
 }
 
+const percent = (value: number) => `${Math.round(value * 100)}%`;
+const surfaceLabel = (value: number) => value < 0.34 ? 'Realistic' : value < 0.67 ? 'Balanced' : 'Cartoon';
+
 const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'width', label: 'Width', min: 2, max: 30, step: 0.1, unit: 'm', structural: true },
   { key: 'depth', label: 'Depth', min: 1, max: 15, step: 0.1, unit: 'm', structural: true },
   { key: 'height', label: 'Height', min: 1, max: 12, step: 0.1, unit: 'm', structural: true },
-  { key: 'waterLevel', label: 'Water level', min: 0.2, max: 0.97, step: 0.01, structural: true, format: (value) => `${Math.round(value * 100)}%` },
-  { key: 'waterTint', label: 'Side tint', min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` },
-  { key: 'waveStrength', label: 'Wave detail', min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` },
-  { key: 'sandVariation', label: 'Color variation', min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` },
+  { key: 'waterLevel', label: 'Water level', min: 0.2, max: 0.97, step: 0.01, structural: true, format: percent },
+  { key: 'waterTint', label: 'Side tint', min: 0, max: 1, step: 0.01, format: percent },
+  { key: 'waveStrength', label: 'Wave definition', min: 0, max: 1, step: 0.01, format: percent },
+  { key: 'waterSurfaceStyle', label: 'Surface character', min: 0, max: 1, step: 0.01, format: surfaceLabel },
+  { key: 'waterWaveScale', label: 'Wave size', min: 0, max: 1, step: 0.01, format: (value) => value < 0.34 ? 'Broad' : value < 0.67 ? 'Medium' : 'Fine' },
+  { key: 'sandVariation', label: 'Color variation', min: 0, max: 1, step: 0.01, format: percent },
   { key: 'sandGrain', label: 'Grain scale', min: 0.1, max: 2.5, step: 0.05, format: (value) => value.toFixed(2) },
   { key: 'baseHeight', label: 'Base thickness', min: 0.02, max: 0.5, step: 0.005, unit: 'm', structural: true },
   { key: 'bottomRimHeight', label: 'Lower rim', min: 0.02, max: 0.5, step: 0.005, unit: 'm', structural: true },
@@ -38,7 +46,16 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'baseOverhang', label: 'Base overhang', min: 0, max: 0.5, step: 0.005, unit: 'm', structural: true },
   { key: 'frameOverhang', label: 'Rim overhang', min: 0, max: 0.3, step: 0.005, unit: 'm', structural: true },
   { key: 'frameOverlap', label: 'Rim overlap', min: 0.01, max: 0.3, step: 0.005, unit: 'm', structural: true },
-  { key: 'curveSegments', label: 'Curve quality', min: 2, max: 12, step: 1, structural: true, format: (value) => `${Math.round(value)} segments` },
+  { key: 'curveSegments', label: 'Corner quality', min: 2, max: 16, step: 1, structural: true, format: (value) => `${Math.round(value)} segments` },
+  { key: 'tunnelWidth', label: 'Passage width', min: 0.8, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'tunnelWallHeight', label: 'Straight wall height', min: 0.35, max: 5, step: 0.05, unit: 'm', structural: true },
+  { key: 'tunnelRoundness', label: 'Arch roundness', min: 0.3, max: 1.35, step: 0.01, structural: true, format: (value) => `${value.toFixed(2)}×` },
+  { key: 'tunnelGlassThickness', label: 'Tunnel acrylic', min: 0.025, max: 0.25, step: 0.005, unit: 'm', structural: true },
+  { key: 'tunnelCurveSegments', label: 'Arch quality', min: 5, max: 24, step: 1, structural: true, format: (value) => `${Math.round(value)} segments` },
+  { key: 'tunnelEndExtension', label: 'End extension', min: 0, max: 0.8, step: 0.01, unit: 'm', structural: true },
+  { key: 'portalFrameWidth', label: 'Portal border', min: 0.04, max: 0.45, step: 0.005, unit: 'm', structural: true },
+  { key: 'portalFrameDepth', label: 'Portal depth', min: 0.04, max: 0.65, step: 0.005, unit: 'm', structural: true },
+  { key: 'tunnelWaterClearance', label: 'Water clearance', min: 0.005, max: 0.12, step: 0.005, unit: 'm', structural: true },
   { key: 'exportScale', label: 'Units per meter', min: 1, max: 100, step: 1, format: (value) => `${Math.round(value)}×` },
 ];
 
@@ -72,12 +89,17 @@ function colorMarkup(key: 'waterColor' | 'sandColor', label: string): string {
     </div>`;
 }
 
+function card(title: string, subtitle: string, content: string, className = ''): string {
+  return `<section class="settings-card ${className}"><header><strong>${title}</strong><span>${subtitle}</span></header><div class="settings-card-body">${content}</div></section>`;
+}
+
 export class ControlPanel {
   private settings: AquariumSettings;
   private readonly root: HTMLElement;
   private readonly callbacks: PanelCallbacks;
   private selectedCorner: SelectedCorner = 'frontLeft';
   private linkCorners = false;
+  private activeTab: PanelTab = 'tank';
 
   constructor(root: HTMLElement, settings: AquariumSettings, callbacks: PanelCallbacks) {
     this.root = root;
@@ -94,147 +116,143 @@ export class ControlPanel {
   }
 
   private render(): void {
+    const tabs: Array<[PanelTab, string, string]> = [
+      ['tank', 'Tank', 'M4 5h16v14H4zM4 13c4-2 7 2 11 0 2-1 4-1 5 0'],
+      ['shape', 'Corners', 'M5 19V9a4 4 0 0 1 4-4h10v14Z'],
+      ['water', 'Water', 'M3 15c3-3 6 3 9 0s6 3 9 0M4 9c3-3 5 2 8 0s5 3 8 0'],
+      ['tunnel', 'Tunnel', 'M4 19V11a8 8 0 0 1 16 0v8M8 19v-8a4 4 0 0 1 8 0v8'],
+      ['details', 'Details', 'M4 7h16M4 12h16M4 17h16M8 5v4m8 1v4m-6 1v4'],
+    ];
+
     this.root.innerHTML = `
-      <details class="control-section" open>
-        <summary><span><strong>Size</strong><small>Overall authored dimensions</small></span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></summary>
-        <div class="section-body">
-          ${rangeMarkup('width')}
-          ${rangeMarkup('depth')}
-          ${rangeMarkup('height')}
-          <p class="section-note">Dimensions are shown in meters. Export scaling is applied only when downloading.</p>
-        </div>
-      </details>
+      <nav class="panel-tabs" aria-label="Aquarium editor sections">
+        ${tabs.map(([id, label, icon]) => `<button type="button" data-tab="${id}" class="${id === this.activeTab ? 'is-active' : ''}"><svg viewBox="0 0 24 24"><path d="${icon}" /></svg><span>${label}</span></button>`).join('')}
+      </nav>
+      <div class="tab-stage">
+        <section class="tab-pane" data-tab-panel="tank">
+          ${card('Tank size', 'Authored dimensions in meters', `${rangeMarkup('width')}${rangeMarkup('depth')}${rangeMarkup('height')}<p class="section-note">The preview stays in meters. The game-unit scale is only applied to the downloaded GLB.</p>`)}
+          ${card('Sand bottom', 'Warm procedural substrate', `${colorMarkup('sandColor', 'Sand color')}${rangeMarkup('sandVariation')}${rangeMarkup('sandGrain')}<button class="secondary-action" id="randomize-sand" type="button"><svg viewBox="0 0 24 24"><path d="M4 7h3l10 10h3M4 17h3l3-3m4-4 3-3h3m0 0-2-2m2 2-2 2m2 8-2-2m2 2-2 2" /></svg>Randomize pattern</button>`)}
+        </section>
 
-      <details class="control-section" open>
-        <summary><span><strong>Corner shape</strong><small>Click a corner to tune it</small></span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></summary>
-        <div class="section-body">
-          <div class="corner-editor">
-            <div class="corner-canvas-wrap">
-              <svg id="corner-preview" viewBox="0 0 240 150" role="img" aria-label="Interactive top view of aquarium corner rounding">
-                <path id="corner-preview-frame" class="corner-preview-frame"></path>
-                <path id="corner-preview-path" class="corner-preview-body"></path>
-                <path id="corner-preview-water" class="corner-preview-water"></path>
-                <g class="corner-hotspot" data-corner="backLeft"><circle r="12"></circle><text>BL</text></g>
-                <g class="corner-hotspot" data-corner="backRight"><circle r="12"></circle><text>BR</text></g>
-                <g class="corner-hotspot" data-corner="frontLeft"><circle r="12"></circle><text>FL</text></g>
-                <g class="corner-hotspot" data-corner="frontRight"><circle r="12"></circle><text>FR</text></g>
-                <text class="front-label" x="120" y="142">FRONT</text>
-              </svg>
+        <section class="tab-pane" data-tab-panel="shape" hidden>
+          ${card('Corner designer', 'Each corner can be rounded, faceted, or square', `
+            <div class="corner-editor">
+              <div class="corner-canvas-wrap">
+                <svg id="corner-preview" viewBox="0 0 240 150" role="img" aria-label="Interactive top view of the aquarium footprint">
+                  <path id="corner-preview-frame" class="corner-preview-frame"></path>
+                  <path id="corner-preview-path" class="corner-preview-body"></path>
+                  <path id="corner-preview-water" class="corner-preview-water"></path>
+                  <path id="corner-preview-tunnel" class="corner-preview-tunnel"></path>
+                  <g class="corner-hotspot" data-corner="backLeft"><circle r="12"></circle><text>BL</text></g>
+                  <g class="corner-hotspot" data-corner="backRight"><circle r="12"></circle><text>BR</text></g>
+                  <g class="corner-hotspot" data-corner="frontLeft"><circle r="12"></circle><text>FL</text></g>
+                  <g class="corner-hotspot" data-corner="frontRight"><circle r="12"></circle><text>FR</text></g>
+                  <text class="front-label" x="120" y="143">FRONT</text>
+                </svg>
+              </div>
+              <div class="corner-preset-row" aria-label="Corner presets">
+                <button type="button" data-corner-preset="panoramic">Panoramic</button>
+                <button type="button" data-corner-preset="balanced">Balanced</button>
+                <button type="button" data-corner-preset="faceted">Faceted</button>
+              </div>
+              <div class="toggle-row">
+                <div><strong>Edit all corners</strong><span>Apply style and radius everywhere</span></div>
+                <button class="switch" id="link-corners" type="button" role="switch" aria-checked="false"><span></span></button>
+              </div>
+              <div class="selected-corner-row">
+                <div><span>Selected corner</span><strong id="selected-corner-name">Front left</strong></div>
+                <output id="corner-output">0.58 m</output>
+              </div>
+              <div class="corner-mode-selector" role="group" aria-label="Selected corner type">
+                <button type="button" data-corner-mode="rounded"><span class="mode-icon mode-rounded"></span>Rounded</button>
+                <button type="button" data-corner-mode="chamfer"><span class="mode-icon mode-chamfer"></span>Flat pane</button>
+                <button type="button" data-corner-mode="square"><span class="mode-icon mode-square"></span>Square</button>
+              </div>
+              <div id="corner-radius-control"><input class="corner-range" id="corner-range" type="range" min="0.01" max="2" step="0.01" /></div>
+              <div class="corner-values" id="corner-values"></div>
             </div>
-            <div class="corner-preset-row" aria-label="Corner presets">
-              <button type="button" data-corner-preset="panoramic" class="is-active">Panoramic</button>
-              <button type="button" data-corner-preset="balanced">Balanced</button>
-              <button type="button" data-corner-preset="square">Square</button>
-            </div>
-            <div class="toggle-row">
-              <div><strong>Edit all corners</strong><span>Apply the selected value everywhere</span></div>
-              <button class="switch" id="link-corners" type="button" role="switch" aria-checked="false"><span></span></button>
-            </div>
-            <div class="selected-corner-row">
-              <div><span>Selected corner</span><strong id="selected-corner-name">Front left</strong></div>
-              <output id="corner-output">0.58 m</output>
-            </div>
-            <input class="corner-range" id="corner-range" type="range" min="0.01" max="2" step="0.01" />
-            <div class="corner-values" id="corner-values"></div>
-          </div>
-          <p class="section-note corner-sync-note">The selected corner is shared by the acrylic, both rims, sand floor, and water footprint.</p>
-          ${rangeMarkup('curveSegments')}
-        </div>
-      </details>
+            <p class="section-note">One shared footprint drives the acrylic, both rims, sand, water, and tunnel openings, so every layer stays aligned.</p>
+            ${rangeMarkup('curveSegments')}
+          `)}
+        </section>
 
-      <details class="control-section" open>
-        <summary><span><strong>Water</strong><small>Color, depth tint, and surface</small></span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></summary>
-        <div class="section-body">
-          ${colorMarkup('waterColor', 'Water color')}
-          ${rangeMarkup('waterLevel')}
-          ${rangeMarkup('waterTint')}
-          ${rangeMarkup('waveStrength')}
-          <p class="section-note">Side tint controls how quickly the blue builds up through the depth of the tank.</p>
-        </div>
-      </details>
-
-      <details class="control-section" open>
-        <summary><span><strong>Sand</strong><small>A warm procedural substrate</small></span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></summary>
-        <div class="section-body">
-          ${colorMarkup('sandColor', 'Sand color')}
-          ${rangeMarkup('sandVariation')}
-          ${rangeMarkup('sandGrain')}
-          <button class="secondary-action" id="randomize-sand" type="button">
-            <svg viewBox="0 0 24 24"><path d="M4 7h3l10 10h3M4 17h3l3-3m4-4 3-3h3m0 0-2-2m2 2-2 2m2 8-2-2m2 2-2 2" /></svg>
-            Randomize sand pattern
-          </button>
-        </div>
-      </details>
-
-      <details class="control-section">
-        <summary><span><strong>Structure</strong><small>Frame and acrylic details</small></span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></summary>
-        <div class="section-body">
-          ${rangeMarkup('baseHeight')}
-          ${rangeMarkup('bottomRimHeight')}
-          ${rangeMarkup('topRimHeight')}
-          ${rangeMarkup('glassThickness')}
-          <details class="advanced-details">
-            <summary>Advanced fit</summary>
-            <div>
-              ${rangeMarkup('baseOverhang')}
-              ${rangeMarkup('frameOverhang')}
-              ${rangeMarkup('frameOverlap')}
+        <section class="tab-pane" data-tab-panel="water" hidden>
+          ${card('Water body', 'Color, fill level, and depth tint', `${colorMarkup('waterColor', 'Water color')}${rangeMarkup('waterLevel')}${rangeMarkup('waterTint')}<p class="section-note">Side tint controls how quickly the blue builds up while looking through the tank.</p>`)}
+          ${card('Top surface', 'Move from restrained realism to graphic water', `
+            <div class="water-style-presets" role="group" aria-label="Water surface style">
+              <button type="button" data-water-preset="realistic"><span class="water-swatch water-realistic"></span><strong>Realistic</strong><small>Subtle, clear</small></button>
+              <button type="button" data-water-preset="balanced"><span class="water-swatch water-balanced"></span><strong>Balanced</strong><small>Readable detail</small></button>
+              <button type="button" data-water-preset="cartoon"><span class="water-swatch water-cartoon"></span><strong>Cartoon</strong><small>Broad color bands</small></button>
             </div>
-          </details>
-        </div>
-      </details>
+            ${rangeMarkup('waterSurfaceStyle')}
+            ${rangeMarkup('waveStrength')}
+            ${rangeMarkup('waterWaveScale')}
+            <p class="section-note">The exported GLB contains the generated color and normal textures—no external image files are required.</p>
+          `)}
+        </section>
 
-      <details class="control-section">
-        <summary><span><strong>Export</strong><small>GLB size and game units</small></span><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4" /></svg></summary>
-        <div class="section-body">
-          ${rangeMarkup('exportScale')}
-          <div class="export-summary">
-            <svg viewBox="0 0 24 24"><path d="M5 19V5h14v14H5Zm0-8h14M12 5v14" /></svg>
-            <div><strong id="export-dimensions">—</strong><span>Downloaded model dimensions</span></div>
-          </div>
-          <p class="section-note">The GLB is exported Y-up, so it imports upright in Blender and standard glTF tools.</p>
-        </div>
-      </details>
-    `;
+        <section class="tab-pane" data-tab-panel="tunnel" hidden>
+          ${card('Walk-through tunnel', 'A dry center passage from entrance to exit', `
+            <div class="feature-toggle-card">
+              <div><strong>Enable tunnel</strong><span>Cut through the base, sand, end panes, and water volume</span></div>
+              <button class="switch switch-large" id="tunnel-enabled" type="button" role="switch" aria-checked="false"><span></span></button>
+            </div>
+            <div class="tunnel-editor" id="tunnel-editor">
+              <div class="tunnel-direction"><span><b>01</b> Entrance · Front</span><svg viewBox="0 0 42 14"><path d="M2 7h36m-5-4 5 4-5 4" /></svg><span><b>02</b> Exit · Back</span></div>
+              <div class="tunnel-preview-wrap">
+                <svg id="tunnel-preview" viewBox="0 0 240 132" role="img" aria-label="Tunnel cross section preview">
+                  <rect class="tunnel-water-background" x="12" y="12" width="216" height="104" rx="8"></rect>
+                  <path id="tunnel-preview-water" class="tunnel-preview-water"></path>
+                  <path id="tunnel-preview-outer" class="tunnel-preview-outer"></path>
+                  <path id="tunnel-preview-inner" class="tunnel-preview-inner"></path>
+                  <line class="tunnel-ground-guide" x1="20" y1="112" x2="220" y2="112"></line>
+                </svg>
+                <div class="tunnel-off-message"><strong>Tunnel is off</strong><span>Enable it to edit the passage.</span></div>
+              </div>
+              ${rangeMarkup('tunnelWidth')}
+              ${rangeMarkup('tunnelWallHeight')}
+              ${rangeMarkup('tunnelRoundness')}
+              <details class="advanced-details"><summary>Advanced tunnel fit</summary><div>${rangeMarkup('tunnelGlassThickness')}${rangeMarkup('portalFrameWidth')}${rangeMarkup('portalFrameDepth')}${rangeMarkup('tunnelEndExtension')}${rangeMarkup('tunnelWaterClearance')}${rangeMarkup('tunnelCurveSegments')}</div></details>
+              <p class="section-note">The passage has no floor mesh. Water is generated as one continuous volume with an arched dry void.</p>
+            </div>
+          `, 'tunnel-card')}
+        </section>
+
+        <section class="tab-pane" data-tab-panel="details" hidden>
+          ${card('Structure', 'Slim frame and acrylic fit', `${rangeMarkup('baseHeight')}${rangeMarkup('bottomRimHeight')}${rangeMarkup('topRimHeight')}${rangeMarkup('glassThickness')}<details class="advanced-details"><summary>Advanced fit</summary><div>${rangeMarkup('baseOverhang')}${rangeMarkup('frameOverhang')}${rangeMarkup('frameOverlap')}</div></details>`)}
+          ${card('Export', 'GLB size and game units', `${rangeMarkup('exportScale')}<div class="export-summary"><svg viewBox="0 0 24 24"><path d="M4 18 12 4l8 14M7 18h10" /></svg><div><strong id="export-dimensions">—</strong><span>Final dimensions after export scaling</span></div></div>`)}
+        </section>
+      </div>`;
   }
 
   private bind(): void {
-    for (const definition of RANGE_DEFINITIONS) {
-      const range = this.root.querySelector<HTMLInputElement>(`[data-range-key="${definition.key}"]`);
-      const number = this.root.querySelector<HTMLInputElement>(`[data-number-key="${definition.key}"]`);
-      if (!range || !number) continue;
-
-      const update = (raw: string) => {
-        const value = Number.parseFloat(raw);
-        if (!Number.isFinite(value)) return;
-        const record = this.settings as unknown as Record<string, number>;
-        record[definition.key] = value;
-        normalizeSettings(this.settings);
-        this.refresh();
-        this.callbacks.onChange(this.settings, definition.structural ?? false);
-      };
-      range.addEventListener('input', () => update(range.value));
-      number.addEventListener('change', () => update(number.value));
-    }
-
-    for (const key of ['waterColor', 'sandColor'] as const) {
-      const picker = this.root.querySelector<HTMLInputElement>(`[data-color-key="${key}"]`)!;
-      const text = this.root.querySelector<HTMLInputElement>(`[data-color-text-key="${key}"]`)!;
-      picker.addEventListener('input', () => {
-        this.settings[key] = picker.value;
-        text.value = picker.value.toUpperCase();
-        this.callbacks.onChange(this.settings, false);
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.activeTab = button.dataset.tab as PanelTab;
+        this.refreshTabs();
       });
-      text.addEventListener('change', () => {
-        const value = text.value.trim();
-        if (/^#[0-9a-f]{6}$/i.test(value)) {
-          this.settings[key] = value;
-          picker.value = value;
-          this.callbacks.onChange(this.settings, false);
-        }
-        this.refresh();
+    });
+
+    this.root.querySelectorAll<HTMLInputElement>('[data-range-key]').forEach((range) => {
+      range.addEventListener('input', () => this.applyNumeric(range.dataset.rangeKey as keyof AquariumSettings, range.value));
+    });
+    this.root.querySelectorAll<HTMLInputElement>('[data-number-key]').forEach((number) => {
+      number.addEventListener('input', () => {
+        if (number.value.trim() !== '') this.applyNumeric(number.dataset.numberKey as keyof AquariumSettings, number.value);
       });
-    }
+      number.addEventListener('change', () => this.refresh());
+    });
+
+    this.root.querySelectorAll<HTMLInputElement>('[data-color-key]').forEach((input) => {
+      input.addEventListener('input', () => this.applyColor(input.dataset.colorKey as 'waterColor' | 'sandColor', input.value));
+    });
+    this.root.querySelectorAll<HTMLInputElement>('[data-color-text-key]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const value = input.value.trim();
+        if (/^#[0-9a-f]{6}$/i.test(value)) this.applyColor(input.dataset.colorTextKey as 'waterColor' | 'sandColor', value);
+        else this.refresh();
+      });
+    });
 
     this.root.querySelectorAll<SVGGElement>('[data-corner]').forEach((element) => {
       element.addEventListener('click', () => {
@@ -246,14 +264,22 @@ export class ControlPanel {
     const cornerRange = this.root.querySelector<HTMLInputElement>('#corner-range')!;
     cornerRange.addEventListener('input', () => {
       const value = Number.parseFloat(cornerRange.value);
-      if (this.linkCorners) {
-        for (const key of Object.keys(this.settings.radii) as SelectedCorner[]) this.settings.radii[key] = value;
-      } else {
-        this.settings.radii[this.selectedCorner] = value;
-      }
+      const targets = this.linkCorners ? Object.keys(this.settings.radii) as SelectedCorner[] : [this.selectedCorner];
+      for (const key of targets) this.settings.radii[key] = value;
       normalizeSettings(this.settings);
       this.refreshCornerEditor();
       this.callbacks.onChange(this.settings, true);
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-corner-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const mode = button.dataset.cornerMode as CornerMode;
+        const targets = this.linkCorners ? Object.keys(this.settings.cornerModes) as SelectedCorner[] : [this.selectedCorner];
+        for (const key of targets) this.settings.cornerModes[key] = mode;
+        normalizeSettings(this.settings);
+        this.refreshCornerEditor();
+        this.callbacks.onChange(this.settings, true);
+      });
     });
 
     this.root.querySelector<HTMLButtonElement>('#link-corners')!.addEventListener('click', (event) => {
@@ -269,16 +295,45 @@ export class ControlPanel {
         const preset = button.dataset.cornerPreset;
         if (preset === 'panoramic') {
           this.settings.radii = { frontLeft: unit * 0.12, frontRight: unit * 0.12, backRight: unit * 0.033, backLeft: unit * 0.033 };
+          this.settings.cornerModes = { frontLeft: 'rounded', frontRight: 'rounded', backRight: 'rounded', backLeft: 'rounded' };
         } else if (preset === 'balanced') {
           this.settings.radii = { frontLeft: unit * 0.085, frontRight: unit * 0.085, backRight: unit * 0.085, backLeft: unit * 0.085 };
+          this.settings.cornerModes = { frontLeft: 'rounded', frontRight: 'rounded', backRight: 'rounded', backLeft: 'rounded' };
         } else {
-          this.settings.radii = { frontLeft: 0.02, frontRight: 0.02, backRight: 0.02, backLeft: 0.02 };
+          this.settings.radii = { frontLeft: unit * 0.1, frontRight: unit * 0.1, backRight: unit * 0.035, backLeft: unit * 0.035 };
+          this.settings.cornerModes = { frontLeft: 'chamfer', frontRight: 'chamfer', backRight: 'square', backLeft: 'square' };
         }
         normalizeSettings(this.settings);
-        this.root.querySelectorAll('[data-corner-preset]').forEach((item) => item.classList.remove('is-active'));
-        button.classList.add('is-active');
         this.refreshCornerEditor();
         this.callbacks.onChange(this.settings, true);
+      });
+    });
+
+    this.root.querySelector<HTMLButtonElement>('#tunnel-enabled')!.addEventListener('click', () => {
+      this.settings.tunnelEnabled = !this.settings.tunnelEnabled;
+      this.refreshTunnelEditor();
+      this.refreshCornerEditor();
+      this.callbacks.onChange(this.settings, true);
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-water-preset]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const preset = button.dataset.waterPreset;
+        if (preset === 'realistic') {
+          this.settings.waterSurfaceStyle = 0.08;
+          this.settings.waveStrength = 0.38;
+          this.settings.waterWaveScale = 0.62;
+        } else if (preset === 'balanced') {
+          this.settings.waterSurfaceStyle = 0.46;
+          this.settings.waveStrength = 0.58;
+          this.settings.waterWaveScale = 0.48;
+        } else {
+          this.settings.waterSurfaceStyle = 0.9;
+          this.settings.waveStrength = 0.72;
+          this.settings.waterWaveScale = 0.25;
+        }
+        this.refresh();
+        this.callbacks.onChange(this.settings, false);
       });
     });
 
@@ -307,6 +362,23 @@ export class ControlPanel {
     });
   }
 
+  private applyNumeric(key: keyof AquariumSettings, raw: string): void {
+    const definition = RANGE_DEFINITIONS.find((item) => item.key === key);
+    if (!definition) return;
+    const value = Number.parseFloat(raw);
+    if (!Number.isFinite(value)) return;
+    (this.settings as unknown as Record<string, number>)[key] = value;
+    normalizeSettings(this.settings);
+    this.refresh();
+    this.callbacks.onChange(this.settings, Boolean(definition.structural));
+  }
+
+  private applyColor(key: 'waterColor' | 'sandColor', value: string): void {
+    this.settings[key] = value.toLowerCase();
+    this.refresh();
+    this.callbacks.onChange(this.settings, false);
+  }
+
   private formatValue(definition: RangeDefinition, value: number): string {
     if (definition.format) return definition.format(value);
     const decimals = definition.step < 0.01 ? 3 : definition.step < 0.1 ? 2 : 1;
@@ -319,8 +391,16 @@ export class ControlPanel {
       const range = this.root.querySelector<HTMLInputElement>(`[data-range-key="${definition.key}"]`);
       const number = this.root.querySelector<HTMLInputElement>(`[data-number-key="${definition.key}"]`);
       const output = this.root.querySelector<HTMLOutputElement>(`#${definition.key}-output`);
-      if (range) range.value = String(value);
-      if (number) number.value = String(Number(value.toFixed(3)));
+      if (range) {
+        if (definition.key === 'tunnelWidth') range.max = String(Math.max(0.9, this.settings.width - 1));
+        if (definition.key === 'tunnelWallHeight') range.max = String(Math.max(0.45, this.settings.height * 0.52));
+        range.value = String(value);
+      }
+      if (number) {
+        if (definition.key === 'tunnelWidth') number.max = String(Math.max(0.9, this.settings.width - 1));
+        if (definition.key === 'tunnelWallHeight') number.max = String(Math.max(0.45, this.settings.height * 0.52));
+        number.value = String(Number(value.toFixed(3)));
+      }
       if (output) output.textContent = this.formatValue(definition, value);
     }
 
@@ -329,79 +409,110 @@ export class ControlPanel {
       this.root.querySelector<HTMLInputElement>(`[data-color-text-key="${key}"]`)!.value = this.settings[key].toUpperCase();
     }
 
+    this.refreshTabs();
     this.refreshCornerEditor();
+    this.refreshWaterStyle();
+    this.refreshTunnelEditor();
     const exportDimensions = this.root.querySelector<HTMLElement>('#export-dimensions')!;
     exportDimensions.textContent = `${(this.settings.width * this.settings.exportScale).toFixed(1)} × ${(this.settings.depth * this.settings.exportScale).toFixed(1)} × ${(this.settings.height * this.settings.exportScale).toFixed(1)} units`;
+  }
+
+  private refreshTabs(): void {
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((button) => button.classList.toggle('is-active', button.dataset.tab === this.activeTab));
+    this.root.querySelectorAll<HTMLElement>('[data-tab-panel]').forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== this.activeTab; });
+  }
+
+  private refreshWaterStyle(): void {
+    const style = this.settings.waterSurfaceStyle;
+    const selected = style < 0.28 ? 'realistic' : style < 0.72 ? 'balanced' : 'cartoon';
+    this.root.querySelectorAll<HTMLButtonElement>('[data-water-preset]').forEach((button) => button.classList.toggle('is-active', button.dataset.waterPreset === selected));
+  }
+
+  private refreshTunnelEditor(): void {
+    const button = this.root.querySelector<HTMLButtonElement>('#tunnel-enabled')!;
+    button.setAttribute('aria-checked', String(this.settings.tunnelEnabled));
+    button.classList.toggle('is-on', this.settings.tunnelEnabled);
+    const editor = this.root.querySelector<HTMLElement>('#tunnel-editor')!;
+    editor.classList.toggle('is-disabled', !this.settings.tunnelEnabled);
+
+    const width = 240;
+    const floorY = 112;
+    const centerX = width * 0.5;
+    const half = Math.min(72, 28 + this.settings.tunnelWidth * 11);
+    const wallPixels = Math.min(54, 18 + this.settings.tunnelWallHeight * 22);
+    const risePixels = Math.min(55, half * 0.52 * this.settings.tunnelRoundness);
+    const springY = floorY - wallPixels;
+    const thickness = Math.max(4, this.settings.tunnelGlassThickness * 55);
+    const innerLeft = centerX - half;
+    const innerRight = centerX + half;
+    const outerLeft = innerLeft - thickness;
+    const outerRight = innerRight + thickness;
+    const innerCrown = springY - risePixels;
+    const outerCrown = innerCrown - thickness;
+    const innerPath = `M ${innerLeft} ${floorY} L ${innerLeft} ${springY} Q ${centerX} ${innerCrown - risePixels * 0.35} ${innerRight} ${springY} L ${innerRight} ${floorY}`;
+    const outerPath = `M ${outerLeft} ${floorY} L ${outerLeft} ${springY} Q ${centerX} ${outerCrown - risePixels * 0.35} ${outerRight} ${springY} L ${outerRight} ${floorY}`;
+    this.root.querySelector<SVGPathElement>('#tunnel-preview-inner')!.setAttribute('d', innerPath);
+    this.root.querySelector<SVGPathElement>('#tunnel-preview-outer')!.setAttribute('d', outerPath);
+    this.root.querySelector<SVGPathElement>('#tunnel-preview-water')!.setAttribute('d', `M 12 12 H 228 V 116 H ${outerRight} V ${springY} Q ${centerX} ${outerCrown - risePixels * 0.35} ${outerLeft} ${springY} V 116 H 12 Z`);
   }
 
   private refreshCornerEditor(): void {
     const maxRadius = Math.max(0.02, Math.min(this.settings.width, this.settings.depth) * 0.49);
     const range = this.root.querySelector<HTMLInputElement>('#corner-range')!;
+    const mode = this.settings.cornerModes[this.selectedCorner];
     range.max = String(maxRadius);
     range.value = String(this.settings.radii[this.selectedCorner]);
-    this.root.querySelector<HTMLOutputElement>('#corner-output')!.textContent = `${this.settings.radii[this.selectedCorner].toFixed(2)} m`;
+    range.disabled = mode === 'square';
+    this.root.querySelector<HTMLElement>('#corner-radius-control')!.classList.toggle('is-disabled', mode === 'square');
+    this.root.querySelector<HTMLOutputElement>('#corner-output')!.textContent = mode === 'square' ? 'Sharp' : `${this.settings.radii[this.selectedCorner].toFixed(2)} m`;
     this.root.querySelector<HTMLElement>('#selected-corner-name')!.textContent = {
-      frontLeft: 'Front left',
-      frontRight: 'Front right',
-      backRight: 'Back right',
-      backLeft: 'Back left',
+      frontLeft: 'Front left', frontRight: 'Front right', backRight: 'Back right', backLeft: 'Back left',
     }[this.selectedCorner];
+    this.root.querySelectorAll<HTMLButtonElement>('[data-corner-mode]').forEach((button) => button.classList.toggle('is-active', button.dataset.cornerMode === mode));
 
-    const preview = this.root.querySelector<SVGSVGElement>('#corner-preview')!;
-    const bodyPath = this.root.querySelector<SVGPathElement>('#corner-preview-path')!;
-    const framePath = this.root.querySelector<SVGPathElement>('#corner-preview-frame')!;
-    const waterPath = this.root.querySelector<SVGPathElement>('#corner-preview-water')!;
-    const availableWidth = 188;
-    const availableHeight = 98;
-    const ratio = this.settings.width / this.settings.depth;
-    const width = ratio > availableWidth / availableHeight ? availableWidth : availableHeight * ratio;
-    const height = ratio > availableWidth / availableHeight ? availableWidth / ratio : availableHeight;
-    const left = (240 - width) * 0.5;
-    const top = 18 + (availableHeight - height) * 0.5;
-    const scale = width / this.settings.width;
-    const right = left + width;
-    const bottom = top + height;
+    const outerWidth = this.settings.width + this.settings.frameOverhang * 2;
+    const outerDepth = this.settings.depth + this.settings.frameOverhang * 2;
+    const scale = Math.min(190 / outerWidth, 100 / outerDepth);
+    const centerX = 120;
+    const centerY = 70;
+    const pathFrom = (points: THREE.Vector2[]) => `${points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${(centerX + point.x * scale).toFixed(2)} ${(centerY + point.y * scale).toFixed(2)}`).join(' ')} Z`;
 
-    const makeOutline = (insetMeters: number, radiusOffsetMeters: number): string => {
-      const inset = insetMeters * scale;
-      const localLeft = left + inset;
-      const localRight = right - inset;
-      const localTop = top + inset;
-      const localBottom = bottom - inset;
-      const localWidth = Math.max(2, localRight - localLeft);
-      const localHeight = Math.max(2, localBottom - localTop);
-      const radius = {
-        frontLeft: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.frontLeft + radiusOffsetMeters) * scale)),
-        frontRight: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.frontRight + radiusOffsetMeters) * scale)),
-        backRight: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.backRight + radiusOffsetMeters) * scale)),
-        backLeft: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.backLeft + radiusOffsetMeters) * scale)),
-      };
-      return [
-        `M ${localLeft + radius.backLeft} ${localTop}`,
-        `L ${localRight - radius.backRight} ${localTop}`,
-        `Q ${localRight} ${localTop} ${localRight} ${localTop + radius.backRight}`,
-        `L ${localRight} ${localBottom - radius.frontRight}`,
-        `Q ${localRight} ${localBottom} ${localRight - radius.frontRight} ${localBottom}`,
-        `L ${localLeft + radius.frontLeft} ${localBottom}`,
-        `Q ${localLeft} ${localBottom} ${localLeft} ${localBottom - radius.frontLeft}`,
-        `L ${localLeft} ${localTop + radius.backLeft}`,
-        `Q ${localLeft} ${localTop} ${localLeft + radius.backLeft} ${localTop}`,
-        'Z',
-      ].join(' ');
-    };
-
-    framePath.setAttribute('d', makeOutline(-this.settings.frameOverhang, this.settings.frameOverhang));
-    bodyPath.setAttribute('d', makeOutline(0, 0));
+    const body = createFootprintLoop(this.settings.width, this.settings.depth, this.settings.radii, this.settings.cornerModes, this.settings.curveSegments);
+    const frame = createFootprintLoop(
+      outerWidth,
+      outerDepth,
+      offsetRadii(this.settings.radii, this.settings.frameOverhang),
+      this.settings.cornerModes,
+      this.settings.curveSegments,
+    );
     const waterInset = this.settings.glassThickness + this.settings.waterWallGap;
-    waterPath.setAttribute('d', makeOutline(waterInset, -waterInset));
+    const water = createFootprintLoop(
+      this.settings.width - waterInset * 2,
+      this.settings.depth - waterInset * 2,
+      offsetRadii(this.settings.radii, -waterInset),
+      this.settings.cornerModes,
+      this.settings.curveSegments,
+    );
+    this.root.querySelector<SVGPathElement>('#corner-preview-frame')!.setAttribute('d', pathFrom(frame));
+    this.root.querySelector<SVGPathElement>('#corner-preview-path')!.setAttribute('d', pathFrom(body));
+    this.root.querySelector<SVGPathElement>('#corner-preview-water')!.setAttribute('d', pathFrom(water));
+
+    const tunnel = this.root.querySelector<SVGPathElement>('#corner-preview-tunnel')!;
+    if (this.settings.tunnelEnabled) {
+      const half = this.settings.tunnelWidth * 0.5 * scale;
+      const top = centerY - this.settings.depth * 0.5 * scale - 7;
+      const bottom = centerY + this.settings.depth * 0.5 * scale + 7;
+      tunnel.setAttribute('d', `M ${centerX - half} ${top} L ${centerX - half} ${bottom} M ${centerX + half} ${top} L ${centerX + half} ${bottom}`);
+      tunnel.style.display = '';
+    } else tunnel.style.display = 'none';
 
     const positions: Record<SelectedCorner, [number, number]> = {
-      backLeft: [left + 8, top + 8],
-      backRight: [right - 8, top + 8],
-      frontLeft: [left + 8, bottom - 8],
-      frontRight: [right - 8, bottom - 8],
+      backLeft: [centerX - this.settings.width * 0.5 * scale + 8, centerY - this.settings.depth * 0.5 * scale + 8],
+      backRight: [centerX + this.settings.width * 0.5 * scale - 8, centerY - this.settings.depth * 0.5 * scale + 8],
+      frontLeft: [centerX - this.settings.width * 0.5 * scale + 8, centerY + this.settings.depth * 0.5 * scale - 8],
+      frontRight: [centerX + this.settings.width * 0.5 * scale - 8, centerY + this.settings.depth * 0.5 * scale - 8],
     };
-    preview.querySelectorAll<SVGGElement>('[data-corner]').forEach((element) => {
+    this.root.querySelectorAll<SVGGElement>('[data-corner]').forEach((element) => {
       const corner = element.dataset.corner as SelectedCorner;
       const [x, y] = positions[corner];
       element.setAttribute('transform', `translate(${x} ${y})`);
@@ -409,9 +520,10 @@ export class ControlPanel {
     });
 
     const cornerValues = this.root.querySelector<HTMLElement>('#corner-values')!;
+    const labels: Record<SelectedCorner, string> = { frontLeft: 'FL', frontRight: 'FR', backRight: 'BR', backLeft: 'BL' };
     cornerValues.innerHTML = (Object.keys(this.settings.radii) as SelectedCorner[]).map((corner) => {
-      const labels: Record<SelectedCorner, string> = { frontLeft: 'FL', frontRight: 'FR', backRight: 'BR', backLeft: 'BL' };
-      return `<button type="button" data-corner-value="${corner}" class="${corner === this.selectedCorner ? 'is-selected' : ''}"><span>${labels[corner]}</span><strong>${this.settings.radii[corner].toFixed(2)}</strong></button>`;
+      const value = this.settings.cornerModes[corner] === 'square' ? 'SQ' : this.settings.radii[corner].toFixed(2);
+      return `<button type="button" data-corner-value="${corner}" class="${corner === this.selectedCorner ? 'is-selected' : ''}"><span>${labels[corner]}</span><strong>${value}</strong></button>`;
     }).join('');
     cornerValues.querySelectorAll<HTMLButtonElement>('[data-corner-value]').forEach((button) => {
       button.addEventListener('click', () => {

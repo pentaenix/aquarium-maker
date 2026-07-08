@@ -107,26 +107,37 @@ export interface WaterTextures {
   normal: THREE.CanvasTexture;
 }
 
+/**
+ * Build one non-repeating surface texture that can move continuously from
+ * physically restrained water to broad, graphic, cartoon-like bands.
+ */
 export function createWaterTextures(
   color: string,
   strength: number,
   seed: number,
+  style = 0.25,
+  waveScale = 0.5,
   width = 512,
   height = 256,
 ): WaterTextures {
   const heightField = new Float32Array(width * height);
   const [baseR, baseG, baseB] = hexToRgb(color);
+  const frequency = 0.65 + waveScale * 2.15;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const u = x / Math.max(1, width - 1);
       const v = y / Math.max(1, height - 1);
-      const ripples =
-        Math.sin(Math.PI * 2 * (1.28 * u + 0.67 * v + 0.09 * u * v) + 0.4) * 0.42 +
-        Math.sin(Math.PI * 2 * (0.51 * u - 1.61 * v + 0.08 * u * u) + 2.1) * 0.29 +
-        Math.sin(Math.PI * 2 * (2.08 * u + 0.37 * v) + 4.2) * 0.16;
-      const organic = (fbm(u * 5.2, v * 5.2, seed, 4) - 0.5) * 0.34;
-      heightField[y * width + x] = ripples + organic;
+      const broad =
+        Math.sin(Math.PI * 2 * frequency * (0.84 * u + 0.43 * v + 0.07 * u * v) + 0.35) * 0.46 +
+        Math.sin(Math.PI * 2 * frequency * (0.31 * u - 0.92 * v + 0.06 * u * u) + 2.0) * 0.30 +
+        Math.sin(Math.PI * 2 * frequency * (1.42 * u + 0.28 * v) + 4.1) * 0.16;
+      const realistic =
+        Math.sin(Math.PI * 2 * (1.28 * u + 0.67 * v + 0.09 * u * v) + 0.4) * 0.34 +
+        Math.sin(Math.PI * 2 * (0.51 * u - 1.61 * v + 0.08 * u * u) + 2.1) * 0.24 +
+        (fbm(u * (5.2 + waveScale * 5), v * (5.2 + waveScale * 5), seed, 4) - 0.5) * 0.42;
+      const graphic = broad + (fbm(u * (2.4 + waveScale * 1.8), v * (2.4 + waveScale * 1.8), seed + 441, 3) - 0.5) * 0.16;
+      heightField[y * width + x] = realistic * (1 - style) + graphic * style;
     }
   }
 
@@ -144,14 +155,18 @@ export function createWaterTextures(
     max = Math.max(max, sample);
   }
   const span = Math.max(0.0001, max - min);
+  const bandCount = Math.round(5 + style * 3);
 
   for (let i = 0; i < heightField.length; i += 1) {
     const normalized = (heightField[i]! - min) / span;
-    const variation = (normalized - 0.5) * 24;
+    const quantized = Math.round(normalized * bandCount) / bandCount;
+    const styled = normalized * (1 - style * 0.72) + quantized * style * 0.72;
+    const variation = (styled - 0.5) * (12 + style * 38);
+    const crest = Math.max(0, styled - (0.70 - style * 0.08)) * style * 38;
     const index = i * 4;
-    colorImage.data[index] = clampByte(baseR + variation * 0.55);
-    colorImage.data[index + 1] = clampByte(baseG + variation * 0.8);
-    colorImage.data[index + 2] = clampByte(baseB + variation);
+    colorImage.data[index] = clampByte(baseR + variation * 0.42 + crest * 0.45);
+    colorImage.data[index + 1] = clampByte(baseG + variation * 0.72 + crest * 0.72);
+    colorImage.data[index + 2] = clampByte(baseB + variation + crest);
     colorImage.data[index + 3] = 255;
   }
   colorContext.putImageData(colorImage, 0, 0);
@@ -162,7 +177,7 @@ export function createWaterTextures(
   const normalContext = normalCanvas.getContext('2d', { alpha: false });
   if (!normalContext) throw new Error('Canvas 2D is unavailable.');
   const normalImage = normalContext.createImageData(width, height);
-  const normalScale = 3.2 + strength * 13;
+  const normalScale = 2.7 + strength * (11 + style * 5.5);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {

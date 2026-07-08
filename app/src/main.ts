@@ -6,7 +6,7 @@ import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aq
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, type AquariumSettings } from './model/settings';
 import { ControlPanel } from './ui/panel';
 
-const STORAGE_KEY = 'aquarium-maker-settings-v3';
+const STORAGE_KEY = 'aquarium-maker-settings-v4';
 
 type CameraView = 'iso' | 'front' | 'side' | 'top' | 'fit';
 
@@ -43,6 +43,7 @@ function mergeSettings(partial: Partial<AquariumSettings>): AquariumSettings {
     ...cloneSettings(DEFAULT_SETTINGS),
     ...partial,
     radii: { ...DEFAULT_SETTINGS.radii, ...partial.radii },
+    cornerModes: { ...DEFAULT_SETTINGS.cornerModes, ...partial.cornerModes },
   });
 }
 
@@ -360,6 +361,15 @@ function render(): void {
 rebuildNow(true);
 panel.setSettings(settings);
 render();
+
+// Small non-UI test hook used by the repository's validation workflow.
+Object.assign(window as unknown as { __aquariumMaker?: unknown }, {
+  __aquariumMaker: {
+    getSettings: () => JSON.parse(JSON.stringify(settings)) as AquariumSettings,
+    getStats: () => ({ triangles: currentBuild?.triangles ?? 0, vertices: currentBuild?.vertices ?? 0 }),
+    exportCurrent: async () => modelGroup ? exportAquariumGLB(modelGroup, settings.exportScale) : null,
+  },
+});
 
 window.addEventListener('beforeunload', () => {
   window.clearTimeout(rebuildTimer);

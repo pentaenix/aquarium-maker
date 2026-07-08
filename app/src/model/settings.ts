@@ -5,11 +5,21 @@ export interface CornerRadii {
   backLeft: number;
 }
 
+export type CornerMode = 'rounded' | 'chamfer' | 'square';
+
+export interface CornerModes {
+  frontLeft: CornerMode;
+  frontRight: CornerMode;
+  backRight: CornerMode;
+  backLeft: CornerMode;
+}
+
 export interface AquariumSettings {
   width: number;
   depth: number;
   height: number;
   radii: CornerRadii;
+  cornerModes: CornerModes;
   curveSegments: number;
   baseHeight: number;
   bottomRimHeight: number;
@@ -31,7 +41,20 @@ export interface AquariumSettings {
   waterColor: string;
   waterTint: number;
   waveStrength: number;
+  waterSurfaceStyle: number;
+  waterWaveScale: number;
   waterSeed: number;
+
+  tunnelEnabled: boolean;
+  tunnelWidth: number;
+  tunnelWallHeight: number;
+  tunnelRoundness: number;
+  tunnelGlassThickness: number;
+  tunnelCurveSegments: number;
+  tunnelEndExtension: number;
+  portalFrameWidth: number;
+  portalFrameDepth: number;
+  tunnelWaterClearance: number;
 
   exportScale: number;
 }
@@ -45,6 +68,12 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
     frontRight: 0.58,
     backRight: 0.16,
     backLeft: 0.16,
+  },
+  cornerModes: {
+    frontLeft: 'rounded',
+    frontRight: 'rounded',
+    backRight: 'rounded',
+    backLeft: 'rounded',
   },
   curveSegments: 6,
   baseHeight: 0.075,
@@ -67,7 +96,20 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   waterColor: '#2a9ed6',
   waterTint: 0.68,
   waveStrength: 0.58,
+  waterSurfaceStyle: 0.24,
+  waterWaveScale: 0.46,
   waterSeed: 94817,
+
+  tunnelEnabled: false,
+  tunnelWidth: 2.45,
+  tunnelWallHeight: 1.02,
+  tunnelRoundness: 0.86,
+  tunnelGlassThickness: 0.075,
+  tunnelCurveSegments: 12,
+  tunnelEndExtension: 0.2,
+  portalFrameWidth: 0.14,
+  portalFrameDepth: 0.2,
+  tunnelWaterClearance: 0.025,
 
   exportScale: 10,
 };
@@ -76,7 +118,12 @@ export function cloneSettings(source: AquariumSettings = DEFAULT_SETTINGS): Aqua
   return {
     ...source,
     radii: { ...source.radii },
+    cornerModes: { ...source.cornerModes },
   };
+}
+
+function isCornerMode(value: unknown): value is CornerMode {
+  return value === 'rounded' || value === 'chamfer' || value === 'square';
 }
 
 export function normalizeSettings(settings: AquariumSettings): AquariumSettings {
@@ -87,10 +134,11 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.height = clamp(settings.height, 1, 12);
   const minDimension = Math.min(settings.width, settings.depth);
   const maxRadius = Math.max(0.02, minDimension * 0.49);
-  settings.curveSegments = Math.round(clamp(settings.curveSegments, 2, 12));
+  settings.curveSegments = Math.round(clamp(settings.curveSegments, 2, 16));
 
   for (const key of Object.keys(settings.radii) as Array<keyof CornerRadii>) {
     settings.radii[key] = clamp(settings.radii[key], 0.01, maxRadius);
+    if (!isCornerMode(settings.cornerModes[key])) settings.cornerModes[key] = 'rounded';
   }
 
   settings.baseHeight = clamp(settings.baseHeight, 0.02, 0.5);
@@ -118,6 +166,20 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.waterWallGap = clamp(settings.waterWallGap, 0.005, 0.2);
   settings.waterTint = clamp(settings.waterTint, 0, 1);
   settings.waveStrength = clamp(settings.waveStrength, 0, 1);
+  settings.waterSurfaceStyle = clamp(settings.waterSurfaceStyle, 0, 1);
+  settings.waterWaveScale = clamp(settings.waterWaveScale, 0, 1);
+
+  settings.tunnelEnabled = Boolean(settings.tunnelEnabled);
+  settings.tunnelWidth = clamp(settings.tunnelWidth, 0.8, Math.max(0.9, settings.width - 1));
+  settings.tunnelWallHeight = clamp(settings.tunnelWallHeight, 0.35, Math.max(0.45, settings.height * 0.52));
+  settings.tunnelRoundness = clamp(settings.tunnelRoundness, 0.3, 1.35);
+  settings.tunnelGlassThickness = clamp(settings.tunnelGlassThickness, 0.025, 0.25);
+  settings.tunnelCurveSegments = Math.round(clamp(settings.tunnelCurveSegments, 5, 24));
+  settings.tunnelEndExtension = clamp(settings.tunnelEndExtension, 0, 0.8);
+  settings.portalFrameWidth = clamp(settings.portalFrameWidth, 0.04, 0.45);
+  settings.portalFrameDepth = clamp(settings.portalFrameDepth, 0.04, 0.65);
+  settings.tunnelWaterClearance = clamp(settings.tunnelWaterClearance, 0.005, 0.12);
+
   settings.exportScale = clamp(settings.exportScale, 1, 100);
   return settings;
 }
