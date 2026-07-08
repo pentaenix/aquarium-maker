@@ -1,6 +1,6 @@
 # Aquarium Maker
 
-A finished, frontend-only public-aquarium generator. Users can tune the model in real time, inspect it in a physically lit Three.js preview, and download the current result as a game-ready binary GLB.
+A finished, frontend-only public-aquarium generator whose browser geometry mirrors the original Python asset generator. Users can tune the model in real time, inspect it in a physically lit Three.js preview, and download the current result as a game-ready binary GLB.
 
 No server, account, API key, or uploaded data is required. Geometry, procedural textures, and GLB export all run in the browser.
 
@@ -11,8 +11,10 @@ No server, account, API key, or uploaded data is required. Geometry, procedural 
 - Visual corner editor with approachable presets
 - Configurable size, structure, acrylic thickness, water level, side tint, waves, and sand
 - Non-repeating procedural water and sand textures
-- Separate water-volume and water-surface meshes, avoiding a visible bottom cap
-- Physically based acrylic and water materials
+- Separate water-volume and water-surface meshes, with the volume cap safely buried inside the sand
+- Physically based acrylic and water materials tuned to match the Python generator
+- Python-parity geometry: 1,008 triangles and 1,014 vertices at the default curve quality
+- One shared corner profile drives the acrylic, rims, sand, and water footprints
 - Named meshes for easy engine-side material replacement
 - Default export scale of 10 output units per authored meter
 - Shareable configurations and optional local persistence

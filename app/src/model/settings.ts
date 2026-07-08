@@ -11,8 +11,6 @@ export interface AquariumSettings {
   height: number;
   radii: CornerRadii;
   curveSegments: number;
-  rimRoundness: number;
-
   baseHeight: number;
   bottomRimHeight: number;
   topRimHeight: number;
@@ -49,11 +47,9 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
     backLeft: 0.16,
   },
   curveSegments: 6,
-  rimRoundness: 0.34,
-
-  baseHeight: 0.055,
-  bottomRimHeight: 0.06,
-  topRimHeight: 0.085,
+  baseHeight: 0.075,
+  bottomRimHeight: 0.075,
+  topRimHeight: 0.095,
   baseOverhang: 0.1,
   frameOverhang: 0.055,
   frameOverlap: 0.045,
@@ -61,16 +57,16 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
 
   sandHeight: 0.07,
   sandWallGap: 0.045,
-  sandColor: '#c9ad77',
-  sandVariation: 0.34,
-  sandGrain: 0.48,
+  sandColor: '#c8ad79',
+  sandVariation: 0.22,
+  sandGrain: 0.52,
   sandSeed: 13579,
 
   waterLevel: 0.91,
   waterWallGap: 0.018,
-  waterColor: '#199bd2',
-  waterTint: 0.58,
-  waveStrength: 0.56,
+  waterColor: '#2a9ed6',
+  waterTint: 0.68,
+  waveStrength: 0.58,
   waterSeed: 94817,
 
   exportScale: 10,
@@ -92,7 +88,6 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   const minDimension = Math.min(settings.width, settings.depth);
   const maxRadius = Math.max(0.02, minDimension * 0.49);
   settings.curveSegments = Math.round(clamp(settings.curveSegments, 2, 12));
-  settings.rimRoundness = clamp(settings.rimRoundness, 0.05, 1);
 
   for (const key of Object.keys(settings.radii) as Array<keyof CornerRadii>) {
     settings.radii[key] = clamp(settings.radii[key], 0.01, maxRadius);

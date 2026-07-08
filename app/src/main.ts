@@ -6,7 +6,7 @@ import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aq
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, type AquariumSettings } from './model/settings';
 import { ControlPanel } from './ui/panel';
 
-const STORAGE_KEY = 'aquarium-maker-settings-v2';
+const STORAGE_KEY = 'aquarium-maker-settings-v3';
 
 type CameraView = 'iso' | 'front' | 'side' | 'top' | 'fit';
 

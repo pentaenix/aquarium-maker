@@ -1,5 +1,4 @@
 import type { AquariumSettings, CornerRadii } from '../model/settings';
-import { insetProfile, topViewPath } from '../model/profile';
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings } from '../model/settings';
 
 export type SelectedCorner = keyof CornerRadii;
@@ -40,7 +39,6 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'frameOverhang', label: 'Rim overhang', min: 0, max: 0.3, step: 0.005, unit: 'm', structural: true },
   { key: 'frameOverlap', label: 'Rim overlap', min: 0.01, max: 0.3, step: 0.005, unit: 'm', structural: true },
   { key: 'curveSegments', label: 'Curve quality', min: 2, max: 12, step: 1, structural: true, format: (value) => `${Math.round(value)} segments` },
-  { key: 'rimRoundness', label: 'Rim roundness', min: 0.05, max: 1, step: 0.01, structural: true, format: (value) => `${Math.round(value * 100)}%` },
   { key: 'exportScale', label: 'Units per meter', min: 1, max: 100, step: 1, format: (value) => `${Math.round(value)}×` },
 ];
 
@@ -113,8 +111,9 @@ export class ControlPanel {
           <div class="corner-editor">
             <div class="corner-canvas-wrap">
               <svg id="corner-preview" viewBox="0 0 240 150" role="img" aria-label="Interactive top view of aquarium corner rounding">
-                <path id="corner-preview-path"></path>
-                <path id="corner-preview-inner-path"></path>
+                <path id="corner-preview-frame" class="corner-preview-frame"></path>
+                <path id="corner-preview-path" class="corner-preview-body"></path>
+                <path id="corner-preview-water" class="corner-preview-water"></path>
                 <g class="corner-hotspot" data-corner="backLeft"><circle r="12"></circle><text>BL</text></g>
                 <g class="corner-hotspot" data-corner="backRight"><circle r="12"></circle><text>BR</text></g>
                 <g class="corner-hotspot" data-corner="frontLeft"><circle r="12"></circle><text>FL</text></g>
@@ -138,6 +137,7 @@ export class ControlPanel {
             <input class="corner-range" id="corner-range" type="range" min="0.01" max="2" step="0.01" />
             <div class="corner-values" id="corner-values"></div>
           </div>
+          <p class="section-note corner-sync-note">The selected corner is shared by the acrylic, both rims, sand floor, and water footprint.</p>
           ${rangeMarkup('curveSegments')}
         </div>
       </details>
@@ -173,7 +173,6 @@ export class ControlPanel {
           ${rangeMarkup('bottomRimHeight')}
           ${rangeMarkup('topRimHeight')}
           ${rangeMarkup('glassThickness')}
-          ${rangeMarkup('rimRoundness')}
           <details class="advanced-details">
             <summary>Advanced fit</summary>
             <div>
@@ -349,8 +348,9 @@ export class ControlPanel {
     }[this.selectedCorner];
 
     const preview = this.root.querySelector<SVGSVGElement>('#corner-preview')!;
-    const path = this.root.querySelector<SVGPathElement>('#corner-preview-path')!;
-    const innerPath = this.root.querySelector<SVGPathElement>('#corner-preview-inner-path')!;
+    const bodyPath = this.root.querySelector<SVGPathElement>('#corner-preview-path')!;
+    const framePath = this.root.querySelector<SVGPathElement>('#corner-preview-frame')!;
+    const waterPath = this.root.querySelector<SVGPathElement>('#corner-preview-water')!;
     const availableWidth = 188;
     const availableHeight = 98;
     const ratio = this.settings.width / this.settings.depth;
@@ -358,28 +358,48 @@ export class ControlPanel {
     const height = ratio > availableWidth / availableHeight ? availableWidth / ratio : availableHeight;
     const left = (240 - width) * 0.5;
     const top = 18 + (availableHeight - height) * 0.5;
-    const layout = { left, top, width, height };
-    path.setAttribute('d', topViewPath(this.settings.width, this.settings.depth, this.settings.radii, layout).d);
+    const scale = width / this.settings.width;
+    const right = left + width;
+    const bottom = top + height;
 
-    const innerFootprint = insetProfile(
-      this.settings.width,
-      this.settings.depth,
-      this.settings.radii,
-      this.settings.glassThickness,
-    );
-    const innerLayout = {
-      left: left + this.settings.glassThickness * (width / this.settings.width),
-      top: top + this.settings.glassThickness * (height / this.settings.depth),
-      width: width - this.settings.glassThickness * 2 * (width / this.settings.width),
-      height: height - this.settings.glassThickness * 2 * (height / this.settings.depth),
+    const makeOutline = (insetMeters: number, radiusOffsetMeters: number): string => {
+      const inset = insetMeters * scale;
+      const localLeft = left + inset;
+      const localRight = right - inset;
+      const localTop = top + inset;
+      const localBottom = bottom - inset;
+      const localWidth = Math.max(2, localRight - localLeft);
+      const localHeight = Math.max(2, localBottom - localTop);
+      const radius = {
+        frontLeft: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.frontLeft + radiusOffsetMeters) * scale)),
+        frontRight: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.frontRight + radiusOffsetMeters) * scale)),
+        backRight: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.backRight + radiusOffsetMeters) * scale)),
+        backLeft: Math.max(0.2, Math.min(localWidth * 0.48, localHeight * 0.48, (this.settings.radii.backLeft + radiusOffsetMeters) * scale)),
+      };
+      return [
+        `M ${localLeft + radius.backLeft} ${localTop}`,
+        `L ${localRight - radius.backRight} ${localTop}`,
+        `Q ${localRight} ${localTop} ${localRight} ${localTop + radius.backRight}`,
+        `L ${localRight} ${localBottom - radius.frontRight}`,
+        `Q ${localRight} ${localBottom} ${localRight - radius.frontRight} ${localBottom}`,
+        `L ${localLeft + radius.frontLeft} ${localBottom}`,
+        `Q ${localLeft} ${localBottom} ${localLeft} ${localBottom - radius.frontLeft}`,
+        `L ${localLeft} ${localTop + radius.backLeft}`,
+        `Q ${localLeft} ${localTop} ${localLeft + radius.backLeft} ${localTop}`,
+        'Z',
+      ].join(' ');
     };
-    innerPath.setAttribute('d', topViewPath(innerFootprint.width, innerFootprint.depth, innerFootprint.radii, innerLayout).d);
+
+    framePath.setAttribute('d', makeOutline(-this.settings.frameOverhang, this.settings.frameOverhang));
+    bodyPath.setAttribute('d', makeOutline(0, 0));
+    const waterInset = this.settings.glassThickness + this.settings.waterWallGap;
+    waterPath.setAttribute('d', makeOutline(waterInset, -waterInset));
 
     const positions: Record<SelectedCorner, [number, number]> = {
       backLeft: [left + 8, top + 8],
-      backRight: [left + width - 8, top + 8],
-      frontLeft: [left + 8, top + height - 8],
-      frontRight: [left + width - 8, top + height - 8],
+      backRight: [right - 8, top + 8],
+      frontLeft: [left + 8, bottom - 8],
+      frontRight: [right - 8, bottom - 8],
     };
     preview.querySelectorAll<SVGGElement>('[data-corner]').forEach((element) => {
       const corner = element.dataset.corner as SelectedCorner;

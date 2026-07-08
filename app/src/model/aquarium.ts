@@ -1,14 +1,5 @@
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import {
-  fitFootprint,
-  fitRadii,
-  insetFootprint,
-  insetProfile,
-  offsetRadii,
-  scaleRadii,
-  type Footprint,
-} from './profile';
 import type { AquariumSettings, CornerRadii } from './settings';
 import { createSandTexture, createWaterTextures } from './textures';
 
@@ -19,165 +10,303 @@ export interface AquariumBuild {
   dispose: () => void;
 }
 
-function roundedPath(
+/**
+ * Browser port of the Python aquarium generator.
+ *
+ * The geometry deliberately mirrors generate_public_aquarium.py:
+ * - one shared rounded footprint drives glass, rims, sand, and water;
+ * - each 90-degree corner uses an explicit circular arc;
+ * - solid caps and vertical walls have separate vertices for crisp edges;
+ * - the water volume has side walls plus a bottom cap hidden inside the sand;
+ * - the visible water surface is a separate flat, continuously UV-mapped mesh.
+ *
+ * Authored coordinates are Y-up, with the viewing/front side at +Z. This is
+ * equivalent to the Python asset after its -90-degree X export rotation.
+ */
+
+function fitRadii(width: number, depth: number, radii: CornerRadii): CornerRadii {
+  const frontLeft = Math.max(0.002, radii.frontLeft);
+  const frontRight = Math.max(0.002, radii.frontRight);
+  const backRight = Math.max(0.002, radii.backRight);
+  const backLeft = Math.max(0.002, radii.backLeft);
+  const scale = Math.min(
+    1,
+    width / Math.max(frontLeft + frontRight, 1e-9),
+    width / Math.max(backLeft + backRight, 1e-9),
+    depth / Math.max(frontLeft + backLeft, 1e-9),
+    depth / Math.max(frontRight + backRight, 1e-9),
+  );
+  return {
+    frontLeft: frontLeft * scale,
+    frontRight: frontRight * scale,
+    backRight: backRight * scale,
+    backLeft: backLeft * scale,
+  };
+}
+
+function offsetRadii(radii: CornerRadii, amount: number, minimum = 0.002): CornerRadii {
+  return {
+    frontLeft: Math.max(minimum, radii.frontLeft + amount),
+    frontRight: Math.max(minimum, radii.frontRight + amount),
+    backRight: Math.max(minimum, radii.backRight + amount),
+    backLeft: Math.max(minimum, radii.backLeft + amount),
+  };
+}
+
+/** Return the exact same 4 × (segments + 1) rounded loop used by Python. */
+function roundedRectLoop(
   width: number,
   depth: number,
-  radii: CornerRadii,
-  clockwise: boolean,
-): THREE.Path {
+  inputRadii: CornerRadii,
+  segmentsPerCorner: number,
+): THREE.Vector2[] {
+  if (width <= 0 || depth <= 0) throw new Error('Rounded rectangle dimensions must be positive.');
+
+  const segments = Math.max(1, Math.round(segmentsPerCorner));
+  const radii = fitRadii(width, depth, inputRadii);
   const halfWidth = width * 0.5;
   const halfDepth = depth * 0.5;
-  const path = new THREE.Path();
 
-  if (!clockwise) {
-    path.moveTo(-halfWidth + radii.frontLeft, -halfDepth);
-    path.lineTo(halfWidth - radii.frontRight, -halfDepth);
-    path.quadraticCurveTo(halfWidth, -halfDepth, halfWidth, -halfDepth + radii.frontRight);
-    path.lineTo(halfWidth, halfDepth - radii.backRight);
-    path.quadraticCurveTo(halfWidth, halfDepth, halfWidth - radii.backRight, halfDepth);
-    path.lineTo(-halfWidth + radii.backLeft, halfDepth);
-    path.quadraticCurveTo(-halfWidth, halfDepth, -halfWidth, halfDepth - radii.backLeft);
-    path.lineTo(-halfWidth, -halfDepth + radii.frontLeft);
-    path.quadraticCurveTo(-halfWidth, -halfDepth, -halfWidth + radii.frontLeft, -halfDepth);
-  } else {
-    path.moveTo(-halfWidth + radii.frontLeft, -halfDepth);
-    path.quadraticCurveTo(-halfWidth, -halfDepth, -halfWidth, -halfDepth + radii.frontLeft);
-    path.lineTo(-halfWidth, halfDepth - radii.backLeft);
-    path.quadraticCurveTo(-halfWidth, halfDepth, -halfWidth + radii.backLeft, halfDepth);
-    path.lineTo(halfWidth - radii.backRight, halfDepth);
-    path.quadraticCurveTo(halfWidth, halfDepth, halfWidth, halfDepth - radii.backRight);
-    path.lineTo(halfWidth, -halfDepth + radii.frontRight);
-    path.quadraticCurveTo(halfWidth, -halfDepth, halfWidth - radii.frontRight, -halfDepth);
-  }
-  path.closePath();
-  return path;
-}
+  // Corner definitions are authored in the Python XY footprint where front is
+  // -Y. We convert to Three.js XZ with front at +Z by storing z = -pythonY.
+  const corners: Array<[number, number, number, number, number]> = [
+    [halfWidth - radii.frontRight, -halfDepth + radii.frontRight, radii.frontRight, -90, 0],
+    [halfWidth - radii.backRight, halfDepth - radii.backRight, radii.backRight, 0, 90],
+    [-halfWidth + radii.backLeft, halfDepth - radii.backLeft, radii.backLeft, 90, 180],
+    [-halfWidth + radii.frontLeft, -halfDepth + radii.frontLeft, radii.frontLeft, 180, 270],
+  ];
 
-function solidShape(width: number, depth: number, radii: CornerRadii): THREE.Shape {
-  const fitted = fitRadii(width, depth, radii);
-  const path = roundedPath(width, depth, fitted, false);
-  const shape = new THREE.Shape();
-  shape.curves = path.curves;
-  shape.currentPoint.copy(path.currentPoint);
-  return shape;
-}
-
-function ringShape(outer: Footprint, inset: number): THREE.Shape {
-  const inner = insetFootprint(outer, inset);
-  const shape = roundedPath(outer.width, outer.depth, outer.radii, false);
-  const ring = new THREE.Shape();
-  ring.curves = shape.curves;
-  ring.currentPoint.copy(shape.currentPoint);
-  ring.holes.push(roundedPath(inner.width, inner.depth, inner.radii, true));
-  return ring;
-}
-
-function planarUVs(geometry: THREE.BufferGeometry, width: number, depth: number): void {
-  const positions = geometry.getAttribute('position');
-  const uv = new Float32Array(positions.count * 2);
-  for (let i = 0; i < positions.count; i += 1) {
-    const x = positions.getX(i);
-    const z = positions.getZ(i);
-    uv[i * 2] = x / width + 0.5;
-    uv[i * 2 + 1] = z / depth + 0.5;
-  }
-  geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-}
-
-function extrude(
-  shape: THREE.Shape,
-  height: number,
-  yBottom: number,
-  curveSegments: number,
-  uvDimensions?: Dimensions,
-): THREE.ExtrudeGeometry {
-  const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth: height,
-    steps: 1,
-    bevelEnabled: false,
-    curveSegments,
-  });
-  geometry.rotateX(-Math.PI / 2);
-  geometry.translate(0, yBottom, 0);
-  geometry.computeVertexNormals();
-  if (uvDimensions) planarUVs(geometry, uvDimensions.width, uvDimensions.depth);
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-  return geometry;
-}
-
-function roundedLoop(
-  width: number,
-  depth: number,
-  radii: CornerRadii,
-  curveSegments: number,
-): THREE.Vector2[] {
-  const sampled = roundedPath(width, depth, radii, false).getPoints(Math.max(2, curveSegments));
   const points: THREE.Vector2[] = [];
-  for (const point of sampled) {
-    if (!points.length || points.at(-1)!.distanceToSquared(point) > 1e-12) points.push(point);
+  for (const [centerX, centerPythonY, radius, startDegrees, endDegrees] of corners) {
+    for (let step = 0; step <= segments; step += 1) {
+      const t = step / segments;
+      const angle = THREE.MathUtils.degToRad(THREE.MathUtils.lerp(startDegrees, endDegrees, t));
+      const x = centerX + radius * Math.cos(angle);
+      const pythonY = centerPythonY + radius * Math.sin(angle);
+      points.push(new THREE.Vector2(x, -pythonY));
+    }
   }
-  if (points.length > 1 && points[0]!.distanceToSquared(points.at(-1)!) < 1e-12) points.pop();
   return points;
 }
 
-function openSideWall(
-  width: number,
-  depth: number,
-  radii: CornerRadii,
-  yBottom: number,
-  yTop: number,
-  curveSegments: number,
+function planarUV(x: number, z: number, loop: THREE.Vector2[]): [number, number] {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const point of loop) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minZ = Math.min(minZ, point.y);
+    maxZ = Math.max(maxZ, point.y);
+  }
+  return [
+    (x - minX) / Math.max(maxX - minX, 1e-9),
+    (z - minZ) / Math.max(maxZ - minZ, 1e-9),
+  ];
+}
+
+function finishGeometry(
+  positions: number[],
+  indices: number[],
+  uvs?: number[],
+  normals?: number[],
 ): THREE.BufferGeometry {
-  const loop = roundedLoop(width, depth, radii, curveSegments);
-  const positions = new Float32Array(loop.length * 2 * 3);
-  const indices: number[] = [];
-
-  for (let index = 0; index < loop.length; index += 1) {
-    const point = loop[index]!;
-    positions[index * 3] = point.x;
-    positions[index * 3 + 1] = yBottom;
-    positions[index * 3 + 2] = point.y;
-    const topIndex = loop.length + index;
-    positions[topIndex * 3] = point.x;
-    positions[topIndex * 3 + 1] = yTop;
-    positions[topIndex * 3 + 2] = point.y;
-  }
-
-  for (let index = 0; index < loop.length; index += 1) {
-    const next = (index + 1) % loop.length;
-    const bottom = index;
-    const bottomNext = next;
-    const top = loop.length + index;
-    const topNext = loop.length + next;
-    // Winding faces outward for the counter-clockwise top-view loop.
-    indices.push(bottom, top, topNext, bottom, topNext, bottomNext);
-  }
-
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
+  if (uvs) geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  if (normals) geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  else geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
   return geometry;
 }
 
-function flatSurface(
-  width: number,
-  depth: number,
-  radii: CornerRadii,
+function pushVertex(
+  positions: number[],
+  point: THREE.Vector2,
   y: number,
-  curveSegments: number,
-): THREE.ShapeGeometry {
-  const geometry = new THREE.ShapeGeometry(solidShape(width, depth, radii), curveSegments);
-  geometry.rotateX(-Math.PI / 2);
-  geometry.translate(0, y, 0);
-  planarUVs(geometry, width, depth);
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-  return geometry;
+  uvs?: number[],
+  uvLoop?: THREE.Vector2[],
+): number {
+  const index = positions.length / 3;
+  positions.push(point.x, y, point.y);
+  if (uvs && uvLoop) {
+    const [u, v] = planarUV(point.x, point.y, uvLoop);
+    uvs.push(u, v);
+  }
+  return index;
+}
+
+function makeSolidPrism(
+  loop: THREE.Vector2[],
+  yBottom: number,
+  yTop: number,
+  includePlanarUVs = false,
+): THREE.BufferGeometry {
+  const count = loop.length;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const uvs = includePlanarUVs ? [] as number[] : undefined;
+
+  const sideBottom = positions.length / 3;
+  for (const point of loop) pushVertex(positions, point, yBottom, uvs, loop);
+  const sideTop = positions.length / 3;
+  for (const point of loop) pushVertex(positions, point, yTop, uvs, loop);
+
+  // The loop is clockwise when viewed from +Y. This winding faces outward.
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(
+      sideBottom + index, sideBottom + next, sideTop + next,
+      sideBottom + index, sideTop + next, sideTop + index,
+    );
+  }
+
+  // Isolated cap rings preserve crisp horizontal edges.
+  const bottomRing = positions.length / 3;
+  for (const point of loop) pushVertex(positions, point, yBottom, uvs, loop);
+  const bottomCenter = positions.length / 3;
+  positions.push(0, yBottom, 0);
+  if (uvs) uvs.push(0.5, 0.5);
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(bottomCenter, bottomRing + next, bottomRing + index);
+  }
+
+  const topRing = positions.length / 3;
+  for (const point of loop) pushVertex(positions, point, yTop, uvs, loop);
+  const topCenter = positions.length / 3;
+  positions.push(0, yTop, 0);
+  if (uvs) uvs.push(0.5, 0.5);
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(topCenter, topRing + index, topRing + next);
+  }
+
+  return finishGeometry(positions, indices, uvs);
+}
+
+function makeRingPrism(
+  outerLoop: THREE.Vector2[],
+  innerLoop: THREE.Vector2[],
+  yBottom: number,
+  yTop: number,
+): THREE.BufferGeometry {
+  if (outerLoop.length !== innerLoop.length) throw new Error('Ring loops must have matching topology.');
+  const count = outerLoop.length;
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  const outerBottom = positions.length / 3;
+  for (const point of outerLoop) pushVertex(positions, point, yBottom);
+  const outerTop = positions.length / 3;
+  for (const point of outerLoop) pushVertex(positions, point, yTop);
+  const innerBottom = positions.length / 3;
+  for (const point of innerLoop) pushVertex(positions, point, yBottom);
+  const innerTop = positions.length / 3;
+  for (const point of innerLoop) pushVertex(positions, point, yTop);
+
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    // Outer wall.
+    indices.push(
+      outerBottom + index, outerBottom + next, outerTop + next,
+      outerBottom + index, outerTop + next, outerTop + index,
+    );
+    // Inner wall faces into the open center.
+    indices.push(
+      innerBottom + index, innerTop + next, innerBottom + next,
+      innerBottom + index, innerTop + index, innerTop + next,
+    );
+  }
+
+  // Separate horizontal copies provide hard top and bottom edges.
+  const bottomOuter = positions.length / 3;
+  for (const point of outerLoop) pushVertex(positions, point, yBottom);
+  const bottomInner = positions.length / 3;
+  for (const point of innerLoop) pushVertex(positions, point, yBottom);
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(
+      bottomOuter + index, bottomInner + next, bottomOuter + next,
+      bottomOuter + index, bottomInner + index, bottomInner + next,
+    );
+  }
+
+  const topOuter = positions.length / 3;
+  for (const point of outerLoop) pushVertex(positions, point, yTop);
+  const topInner = positions.length / 3;
+  for (const point of innerLoop) pushVertex(positions, point, yTop);
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(
+      topOuter + index, topOuter + next, topInner + next,
+      topOuter + index, topInner + next, topInner + index,
+    );
+  }
+
+  return finishGeometry(positions, indices);
+}
+
+function makeWaterVolume(
+  loop: THREE.Vector2[],
+  yBottom: number,
+  yTop: number,
+): THREE.BufferGeometry {
+  const count = loop.length;
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  const bottom = positions.length / 3;
+  for (const point of loop) pushVertex(positions, point, yBottom);
+  const top = positions.length / 3;
+  for (const point of loop) pushVertex(positions, point, yTop);
+
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(
+      bottom + index, bottom + next, top + next,
+      bottom + index, top + next, top + index,
+    );
+  }
+
+  // The bottom is buried inside the substrate. There is deliberately no top
+  // cap because WATER_Surface is the visible, normal-mapped top.
+  const capRing = positions.length / 3;
+  for (const point of loop) pushVertex(positions, point, yBottom);
+  const center = positions.length / 3;
+  positions.push(0, yBottom, 0);
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(center, capRing + next, capRing + index);
+  }
+
+  return finishGeometry(positions, indices);
+}
+
+function makeFlatWaterSurface(loop: THREE.Vector2[], y: number): THREE.BufferGeometry {
+  const count = loop.length;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const uvs: number[] = [];
+  const normals: number[] = [];
+
+  for (const point of loop) {
+    pushVertex(positions, point, y, uvs, loop);
+    normals.push(0, 1, 0);
+  }
+  const center = positions.length / 3;
+  positions.push(0, y, 0);
+  uvs.push(0.5, 0.5);
+  normals.push(0, 1, 0);
+
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count;
+    indices.push(center, index, next);
+  }
+  return finishGeometry(positions, indices, uvs, normals);
 }
 
 function meshStats(group: THREE.Group): { triangles: number; vertices: number } {
@@ -205,76 +334,108 @@ function disposeMaterial(material: THREE.Material): void {
 
 export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const group = new THREE.Group();
-  group.name = 'PUBLIC_AQUARIUM';
+  group.name = 'PROFESSIONAL_PUBLIC_AQUARIUM';
   group.userData = {
     generator: 'Aquarium Maker',
+    geometryProfile: 'Python parity',
     authoredUnits: 'meters',
     exportUnitsPerMeter: settings.exportScale,
+    frontAxis: '+Z',
+    upAxis: '+Y',
     openTop: true,
+    opaqueBackPanel: false,
   };
 
-  const bodyFootprint = fitFootprint(settings.width, settings.depth, settings.radii);
-  const bodyRadii = bodyFootprint.radii;
+  const bodyRadii = fitRadii(settings.width, settings.depth, settings.radii);
 
-  const baseOuter = fitFootprint(
+  const glassOuter = roundedRectLoop(
+    settings.width,
+    settings.depth,
+    bodyRadii,
+    settings.curveSegments,
+  );
+  const glassInner = roundedRectLoop(
+    settings.width - settings.glassThickness * 2,
+    settings.depth - settings.glassThickness * 2,
+    offsetRadii(bodyRadii, -settings.glassThickness),
+    settings.curveSegments,
+  );
+
+  // The trim follows the same corner profile as the acrylic, exactly as in the
+  // Python generator. Adjusting any corner therefore updates every nested part.
+  const baseOuter = roundedRectLoop(
     settings.width + settings.baseOverhang * 2,
     settings.depth + settings.baseOverhang * 2,
     offsetRadii(bodyRadii, settings.baseOverhang),
+    settings.curveSegments,
   );
-
-  const subtleRimRadii = scaleRadii(bodyRadii, settings.rimRoundness);
-  const frameOuter = fitFootprint(
+  const frameOuter = roundedRectLoop(
     settings.width + settings.frameOverhang * 2,
     settings.depth + settings.frameOverhang * 2,
-    offsetRadii(subtleRimRadii, settings.frameOverhang),
+    offsetRadii(bodyRadii, settings.frameOverhang),
+    settings.curveSegments,
+  );
+  const frameInner = roundedRectLoop(
+    settings.width - settings.frameOverlap * 2,
+    settings.depth - settings.frameOverlap * 2,
+    offsetRadii(bodyRadii, -settings.frameOverlap),
+    settings.curveSegments,
   );
 
-  const sandProfile = insetProfile(
-    settings.width,
-    settings.depth,
-    settings.radii,
-    settings.glassThickness + settings.sandWallGap,
+  const sandInset = settings.glassThickness + settings.sandWallGap;
+  const sandLoop = roundedRectLoop(
+    settings.width - sandInset * 2,
+    settings.depth - sandInset * 2,
+    offsetRadii(bodyRadii, -sandInset),
+    settings.curveSegments,
   );
-  const waterProfile = insetProfile(
-    settings.width,
-    settings.depth,
-    settings.radii,
-    settings.glassThickness + settings.waterWallGap,
+
+  const waterInset = settings.glassThickness + settings.waterWallGap;
+  const waterLoop = roundedRectLoop(
+    settings.width - waterInset * 2,
+    settings.depth - waterInset * 2,
+    offsetRadii(bodyRadii, -waterInset),
+    settings.curveSegments,
   );
 
   const baseTop = settings.baseHeight;
+  const bottomRimTop = baseTop + settings.bottomRimHeight;
   const topRimBottom = settings.height - settings.topRimHeight;
   const glassBottom = baseTop + settings.bottomRimHeight * 0.34;
   const glassTop = settings.height - settings.topRimHeight * 0.34;
   const sandBottom = baseTop + settings.bottomRimHeight * 0.58;
   const sandTop = sandBottom + settings.sandHeight;
-  const waterCeiling = topRimBottom - 0.055;
-  const waterTop = sandTop + (waterCeiling - sandTop) * settings.waterLevel;
+  const interiorWaterCeiling = topRimBottom - 0.055;
+  const waterTop = sandTop + (interiorWaterCeiling - sandTop) * settings.waterLevel;
   const waterBottom = sandTop - Math.min(0.032, settings.sandHeight * 0.45);
+  const waterDepth = Math.max(0.001, waterTop - waterBottom);
 
   const baseMaterial = new THREE.MeshStandardMaterial({
     name: 'Plinth_Painted',
-    color: '#30383e',
+    color: new THREE.Color(0.19, 0.215, 0.235),
     metalness: 0,
     roughness: 0.82,
   });
   const frameMaterial = new THREE.MeshStandardMaterial({
     name: 'Frame_Steel',
-    color: '#4b525a',
+    color: new THREE.Color(0.29, 0.315, 0.34),
     metalness: 0.54,
     roughness: 0.34,
   });
   const glassMaterial = new THREE.MeshPhysicalMaterial({
     name: 'Acrylic_Glass',
-    color: '#d9f4fb',
+    color: new THREE.Color(0.84, 0.96, 1),
     metalness: 0,
-    roughness: 0.035,
+    roughness: 0.025,
     transmission: 0.965,
     thickness: settings.glassThickness,
     attenuationDistance: 18,
-    attenuationColor: new THREE.Color('#d8f4fb'),
+    attenuationColor: new THREE.Color(0.86, 0.96, 1),
     ior: 1.49,
-    envMapIntensity: 1.08,
+    transparent: true,
+    opacity: 0.12,
+    depthWrite: false,
+    envMapIntensity: 1.05,
     side: THREE.FrontSide,
   });
 
@@ -286,10 +447,10 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   );
   const sandMaterial = new THREE.MeshStandardMaterial({
     name: 'Sand_Substrate',
-    color: '#ffffff',
+    color: 0xffffff,
     map: sandTexture,
     metalness: 0,
-    roughness: 0.94,
+    roughness: 0.93,
   });
 
   const waterTextures = createWaterTextures(
@@ -297,43 +458,55 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     settings.waveStrength,
     settings.waterSeed,
   );
-  const waterVolumeColor = new THREE.Color(settings.waterColor).multiplyScalar(0.82);
+  const attenuationDistance = THREE.MathUtils.lerp(12, 1, settings.waterTint);
+  const volumeOpacity = THREE.MathUtils.lerp(0.035, 0.11, settings.waterTint);
   const waterVolumeMaterial = new THREE.MeshPhysicalMaterial({
     name: 'Water_Volume',
-    color: waterVolumeColor,
+    color: new THREE.Color(settings.waterColor),
     metalness: 0,
-    roughness: 0.12,
+    roughness: 0.05,
+    transmission: 0.985,
+    thickness: waterDepth,
+    attenuationDistance,
+    attenuationColor: new THREE.Color(settings.waterColor),
+    ior: 1.333,
     transparent: true,
-    opacity: THREE.MathUtils.lerp(0.025, 0.16, Math.pow(settings.waterTint, 1.1)),
+    opacity: volumeOpacity,
     depthWrite: false,
-    envMapIntensity: 0.55,
-    side: THREE.DoubleSide,
+    envMapIntensity: 0.7,
+    side: THREE.FrontSide,
   });
-  const waterSurfaceColor = new THREE.Color(settings.waterColor).lerp(new THREE.Color('#d9f7ff'), 0.36);
   const waterSurfaceMaterial = new THREE.MeshPhysicalMaterial({
     name: 'Water_Surface',
-    color: waterSurfaceColor,
+    color: 0xffffff,
     map: waterTextures.color,
     normalMap: waterTextures.normal,
-    normalScale: new THREE.Vector2(0.46 + settings.waveStrength * 0.76, 0.46 + settings.waveStrength * 0.76),
+    normalScale: new THREE.Vector2(
+      0.40 + settings.waveStrength * 0.72,
+      0.40 + settings.waveStrength * 0.72,
+    ),
     metalness: 0,
-    roughness: 0.07,
-    transmission: 0.89,
+    roughness: 0.055,
+    transmission: 0.91,
     thickness: 0.02,
     attenuationDistance: 8,
     attenuationColor: new THREE.Color(settings.waterColor),
     ior: 1.333,
-    envMapIntensity: 1.14,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+    envMapIntensity: 1.1,
     side: THREE.DoubleSide,
   });
 
   function addMesh(
     name: string,
     geometry: THREE.BufferGeometry,
-    material: THREE.Material | THREE.Material[],
+    material: THREE.Material,
     castShadow = true,
     receiveShadow = true,
   ): THREE.Mesh {
+    geometry.name = name;
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = name;
     mesh.castShadow = castShadow;
@@ -344,17 +517,18 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   addMesh(
     'STRUCTURE_BasePlinth',
-    extrude(solidShape(baseOuter.width, baseOuter.depth, baseOuter.radii), settings.baseHeight, 0, settings.curveSegments),
+    makeSolidPrism(baseOuter, 0, baseTop),
     baseMaterial,
   );
   addMesh(
     'STRUCTURE_BottomRim',
-    extrude(ringShape(frameOuter, settings.frameOverlap), settings.bottomRimHeight, baseTop, settings.curveSegments),
+    makeRingPrism(frameOuter, frameInner, baseTop, bottomRimTop),
     frameMaterial,
   );
+
   const glassMesh = addMesh(
     'GLASS_AcrylicShell',
-    extrude(ringShape(bodyFootprint, settings.glassThickness), glassTop - glassBottom, glassBottom, settings.curveSegments),
+    makeRingPrism(glassOuter, glassInner, glassBottom, glassTop),
     glassMaterial,
     false,
     false,
@@ -363,13 +537,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   addMesh(
     'INTERIOR_SandFloor',
-    extrude(
-      solidShape(sandProfile.width, sandProfile.depth, sandProfile.radii),
-      settings.sandHeight,
-      sandBottom,
-      settings.curveSegments,
-      sandProfile,
-    ),
+    makeSolidPrism(sandLoop, sandBottom, sandTop, true),
     sandMaterial,
     false,
     true,
@@ -377,14 +545,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   const waterVolume = addMesh(
     'WATER_Volume',
-    openSideWall(
-      waterProfile.width,
-      waterProfile.depth,
-      waterProfile.radii,
-      waterBottom,
-      waterTop - 0.002,
-      settings.curveSegments,
-    ),
+    makeWaterVolume(waterLoop, waterBottom, waterTop - 0.002),
     waterVolumeMaterial,
     false,
     false,
@@ -393,7 +554,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   const waterSurface = addMesh(
     'WATER_Surface',
-    flatSurface(waterProfile.width, waterProfile.depth, waterProfile.radii, waterTop, settings.curveSegments),
+    makeFlatWaterSurface(waterLoop, waterTop),
     waterSurfaceMaterial,
     false,
     false,
@@ -402,7 +563,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
   addMesh(
     'STRUCTURE_TopRim',
-    extrude(ringShape(frameOuter, settings.frameOverlap), settings.topRimHeight, topRimBottom, settings.curveSegments),
+    makeRingPrism(frameOuter, frameInner, topRimBottom, settings.height),
     frameMaterial,
   );
 
