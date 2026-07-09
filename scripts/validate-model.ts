@@ -55,3 +55,18 @@ const mixed = cloneSettings(DEFAULT_SETTINGS);
 mixed.cornerModes = { frontLeft: 'chamfer', frontRight: 'rounded', backRight: 'square', backLeft: 'chamfer' };
 mixed.tunnelEnabled = true;
 validate('mixed-corners-tunnel', mixed);
+const widthTunnel = cloneSettings(DEFAULT_SETTINGS);
+widthTunnel.tunnelEnabled = true;
+widthTunnel.tunnelAxis = 'width';
+widthTunnel.tunnelOffset = 0.55;
+widthTunnel.tunnelWidth = 1.8;
+widthTunnel.width = 12;
+widthTunnel.depth = 7;
+validate('width-axis-offset-tunnel', widthTunnel);
+
+const squareTunnel = cloneSettings(DEFAULT_SETTINGS);
+squareTunnel.tunnelEnabled = true;
+squareTunnel.tunnelRoundness = 0;
+squareTunnel.tunnelOffset = -0.6;
+squareTunnel.groundPreset = 'gravel';
+validate('square-offset-gravel-tunnel', squareTunnel);

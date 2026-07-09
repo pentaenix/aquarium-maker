@@ -3,8 +3,8 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as polygonClippingModule from 'polygon-clipping';
 import type { MultiPolygon, Polygon as ClipPolygon, Ring } from 'polygon-clipping';
-import type { AquariumSettings, CornerModes, CornerRadii } from './settings';
-import { createSandTexture, createWaterTextures } from './textures';
+import type { AquariumSettings, CornerModes, CornerRadii, TunnelAxis } from './settings';
+import { createGroundTexture, createWaterTextures } from './textures';
 
 export interface AquariumBuild {
   group: THREE.Group;
@@ -478,12 +478,17 @@ function makePolygonPrism(
   return finishGeometry(positions, indices, uvs);
 }
 
-function isFrontOrBackStraightSegment(loop: THREE.Vector2[], index: number): boolean {
+function isTunnelEndStraightSegment(loop: THREE.Vector2[], index: number, axis: TunnelAxis): boolean {
   const a = loop[index]!;
   const b = loop[(index + 1) % loop.length]!;
-  if (Math.abs(a.y - b.y) > 1e-7) return false;
-  const maxAbsZ = Math.max(...loop.map((point) => Math.abs(point.y)));
-  return Math.abs(Math.abs((a.y + b.y) * 0.5) - maxAbsZ) < 1e-5;
+  if (axis === 'depth') {
+    if (Math.abs(a.y - b.y) > 1e-7) return false;
+    const maxAbsZ = Math.max(...loop.map((point) => Math.abs(point.y)));
+    return Math.abs(Math.abs((a.y + b.y) * 0.5) - maxAbsZ) < 1e-5;
+  }
+  if (Math.abs(a.x - b.x) > 1e-7) return false;
+  const maxAbsX = Math.max(...loop.map((point) => Math.abs(point.x)));
+  return Math.abs(Math.abs((a.x + b.x) * 0.5) - maxAbsX) < 1e-5;
 }
 
 function makeSideCornerGlassShell(
@@ -491,6 +496,7 @@ function makeSideCornerGlassShell(
   inner: THREE.Vector2[],
   yBottom: number,
   yTop: number,
+  axis: TunnelAxis,
 ): THREE.BufferGeometry {
   const positions: number[] = [];
   const indices: number[] = [];
@@ -500,7 +506,7 @@ function makeSideCornerGlassShell(
 
   for (let i = 0; i < outer.length; i += 1) {
     const next = (i + 1) % outer.length;
-    if (isFrontOrBackStraightSegment(outer, i)) {
+    if (isTunnelEndStraightSegment(outer, i, axis)) {
       omitted.push(i);
       continue;
     }
@@ -556,6 +562,13 @@ function archProfile(
   segments: number,
 ): ArchProfile {
   const springY = floorY + wallHeight;
+  if (roofRise <= 0.002) {
+    const roof = [new THREE.Vector2(-halfWidth, springY), new THREE.Vector2(halfWidth, springY)];
+    return {
+      roof,
+      full: [new THREE.Vector2(-halfWidth, floorY), ...roof, new THREE.Vector2(halfWidth, floorY)],
+    };
+  }
   const roof: THREE.Vector2[] = [];
   for (let i = 0; i <= segments; i += 1) {
     const angle = Math.PI - (Math.PI * i) / segments;
@@ -565,6 +578,31 @@ function archProfile(
     roof,
     full: [new THREE.Vector2(-halfWidth, floorY), new THREE.Vector2(-halfWidth, springY), ...roof.slice(1), new THREE.Vector2(halfWidth, floorY)],
   };
+}
+
+function toTunnelLocalPoint(point: THREE.Vector2, axis: TunnelAxis, offset: number): THREE.Vector2 {
+  return axis === 'depth'
+    ? new THREE.Vector2(point.x - offset, point.y)
+    : new THREE.Vector2(point.y - offset, -point.x);
+}
+
+function toTunnelLocalLoop(loop: THREE.Vector2[], axis: TunnelAxis, offset: number): THREE.Vector2[] {
+  return loop.map((point) => toTunnelLocalPoint(point, axis, offset));
+}
+
+function orientTunnelGeometry(geometry: THREE.BufferGeometry, axis: TunnelAxis, offset: number): THREE.BufferGeometry {
+  if (axis === 'depth') geometry.translate(offset, 0, 0);
+  else {
+    geometry.rotateY(-Math.PI * 0.5);
+    geometry.translate(0, 0, offset);
+  }
+  return geometry;
+}
+
+function tunnelCorridorPolygon(axis: TunnelAxis, offset: number, halfWidth: number, deep: number): ClipPolygon {
+  return axis === 'depth'
+    ? rectanglePolygon(offset - halfWidth, -deep, offset + halfWidth, deep)
+    : rectanglePolygon(-deep, offset - halfWidth, deep, offset + halfWidth);
 }
 
 function makeProfileShell(
@@ -715,7 +753,7 @@ function makeWaterVolumeWithTunnel(
 
   for (let i = 0; i < waterLoop.length; i += 1) {
     const next = (i + 1) % waterLoop.length;
-    if (isFrontOrBackStraightSegment(waterLoop, i)) continue;
+    if (isTunnelEndStraightSegment(waterLoop, i, 'depth')) continue;
     const a = waterLoop[i]!;
     const b = waterLoop[next]!;
     const edge = b.clone().sub(a);
@@ -812,8 +850,16 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     upAxis: '+Y',
     openTop: true,
     opaqueBackPanel: false,
+    groundPreset: settings.groundPreset,
     tunnelEnabled: settings.tunnelEnabled,
-    tunnelOrder: settings.tunnelEnabled ? 'ENTRANCE(+Z) -> EXIT(-Z)' : undefined,
+    tunnelAxis: settings.tunnelEnabled ? settings.tunnelAxis : undefined,
+    tunnelOffset: settings.tunnelEnabled ? settings.tunnelOffset : undefined,
+    tunnelProfile: settings.tunnelEnabled ? (settings.tunnelRoundness <= 0.015 ? 'square' : 'arched') : undefined,
+    tunnelOrder: settings.tunnelEnabled
+      ? settings.tunnelAxis === 'depth'
+        ? 'ENTRANCE(+Z/front) -> EXIT(-Z/back)'
+        : 'ENTRANCE(-X/left) -> EXIT(+X/right)'
+      : undefined,
   };
 
   const bodyRadii = fitRadii(settings.width, settings.depth, effectiveRadii(settings.radii, settings.cornerModes));
@@ -885,9 +931,10 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     transparent: true, opacity: 0.105, depthWrite: false, envMapIntensity: 1.1, side: THREE.FrontSide,
   });
 
-  const sandTexture = createSandTexture(settings.sandColor, settings.sandVariation, settings.sandGrain, settings.sandSeed);
+  const sandTexture = createGroundTexture(settings.groundPreset, settings.sandColor, settings.sandVariation, settings.sandGrain, settings.sandSeed);
+  const groundRoughness = settings.groundPreset === 'algae' ? 0.78 : settings.groundPreset === 'gravel' ? 0.9 : 0.94;
   const sandMaterial = new THREE.MeshStandardMaterial({
-    name: 'Sand_Substrate', color: 0xffffff, map: sandTexture, metalness: 0, roughness: 0.93,
+    name: `Ground_${settings.groundPreset}`, color: 0xffffff, map: sandTexture, metalness: 0, roughness: groundRoughness,
   });
 
   const waterTextures = createWaterTextures(
@@ -954,23 +1001,29 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     surface.renderOrder = 3;
     addMesh('STRUCTURE_TopRim', makeRingPrism(frameOuter, frameInner, topRimBottom, settings.height), frameMaterial);
   } else {
+    const axis = settings.tunnelAxis;
+    const offset = settings.tunnelOffset;
     const innerHalf = settings.tunnelWidth * 0.5;
+    const squareRoof = settings.tunnelRoundness <= 0.015;
     const maximumCrown = Math.max(0.55, waterTop - settings.tunnelGlassThickness - 0.28);
-    const wallHeight = Math.min(settings.tunnelWallHeight, maximumCrown - 0.18);
+    const wallHeight = Math.min(settings.tunnelWallHeight, squareRoof ? maximumCrown : maximumCrown - 0.18);
     const requestedRise = innerHalf * settings.tunnelRoundness;
-    const innerRise = Math.max(0.16, Math.min(requestedRise, maximumCrown - wallHeight));
+    const innerRise = squareRoof ? 0 : Math.max(0.08, Math.min(requestedRise, maximumCrown - wallHeight));
     const innerArch = archProfile(innerHalf, 0, wallHeight, innerRise, settings.tunnelCurveSegments);
     const outerHalf = innerHalf + settings.tunnelGlassThickness;
-    const outerArch = archProfile(
-      outerHalf,
-      0,
-      wallHeight,
-      innerRise + settings.tunnelGlassThickness,
-      settings.tunnelCurveSegments,
-    );
+    const outerArch = squareRoof
+      ? archProfile(outerHalf, 0, wallHeight + settings.tunnelGlassThickness, 0, settings.tunnelCurveSegments)
+      : archProfile(
+        outerHalf,
+        0,
+        wallHeight,
+        innerRise + settings.tunnelGlassThickness,
+        settings.tunnelCurveSegments,
+      );
 
-    const deep = settings.depth + settings.baseOverhang * 4 + 2;
-    const structuralCorridor = rectanglePolygon(-innerHalf, -deep, innerHalf, deep);
+    const longitudinalSize = axis === 'depth' ? settings.depth : settings.width;
+    const deep = longitudinalSize + settings.baseOverhang * 4 + 2;
+    const structuralCorridor = tunnelCorridorPolygon(axis, offset, innerHalf, deep);
     const baseRegion = difference(loopPolygon(baseOuter), structuralCorridor);
     const bottomRingRegion = difference(loopPolygon(frameOuter), loopPolygon(frameInner), structuralCorridor);
     const sandRegion = difference(loopPolygon(sandLoop), structuralCorridor);
@@ -981,28 +1034,33 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
     const sideGlass = addMesh(
       'GLASS_SideAndCornerShell',
-      makeSideCornerGlassShell(glassOuter, glassInner, glassBottom, glassTop),
+      makeSideCornerGlassShell(glassOuter, glassInner, glassBottom, glassTop, axis),
       glassMaterial,
       false,
       false,
     );
     sideGlass.renderOrder = 6;
 
-    const frontZ = Math.max(...glassOuter.map((point) => point.y));
-    const backZ = Math.min(...glassOuter.map((point) => point.y));
-    const frontPoints = glassOuter.filter((point) => Math.abs(point.y - frontZ) < 1e-5);
-    const backPoints = glassOuter.filter((point) => Math.abs(point.y - backZ) < 1e-5);
-    const frontMinX = Math.min(...frontPoints.map((point) => point.x));
-    const frontMaxX = Math.max(...frontPoints.map((point) => point.x));
-    const backMinX = Math.min(...backPoints.map((point) => point.x));
-    const backMaxX = Math.max(...backPoints.map((point) => point.x));
+    const localGlassOuter = toTunnelLocalLoop(glassOuter, axis, offset);
+    const entranceS = Math.max(...localGlassOuter.map((point) => point.y));
+    const exitS = Math.min(...localGlassOuter.map((point) => point.y));
+    const entrancePoints = localGlassOuter.filter((point) => Math.abs(point.y - entranceS) < 1e-5);
+    const exitPoints = localGlassOuter.filter((point) => Math.abs(point.y - exitS) < 1e-5);
+    const entranceMin = Math.min(...entrancePoints.map((point) => point.x));
+    const entranceMax = Math.max(...entrancePoints.map((point) => point.x));
+    const exitMin = Math.min(...exitPoints.map((point) => point.x));
+    const exitMax = Math.max(...exitPoints.map((point) => point.x));
 
     const entranceWall = addMesh(
       'GLASS_EntranceWall',
-      makeEndWallWithPortal(
-        frontMinX, frontMaxX,
-        frontZ - settings.glassThickness, frontZ,
-        glassBottom, glassTop, outerHalf, outerArch.roof,
+      orientTunnelGeometry(
+        makeEndWallWithPortal(
+          entranceMin, entranceMax,
+          entranceS - settings.glassThickness, entranceS,
+          glassBottom, glassTop, outerHalf, outerArch.roof,
+        ),
+        axis,
+        offset,
       ),
       glassMaterial,
       false,
@@ -1011,10 +1069,14 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     entranceWall.renderOrder = 6;
     const exitWall = addMesh(
       'GLASS_ExitWall',
-      makeEndWallWithPortal(
-        backMinX, backMaxX,
-        backZ, backZ + settings.glassThickness,
-        glassBottom, glassTop, outerHalf, outerArch.roof,
+      orientTunnelGeometry(
+        makeEndWallWithPortal(
+          exitMin, exitMax,
+          exitS, exitS + settings.glassThickness,
+          glassBottom, glassTop, outerHalf, outerArch.roof,
+        ),
+        axis,
+        offset,
       ),
       glassMaterial,
       false,
@@ -1024,11 +1086,15 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
     addMesh('INTERIOR_SandFloor', makePolygonPrism(sandRegion, sandBottom, sandTop, true), sandMaterial, false, true);
 
-    const tunnelFront = frontZ + settings.tunnelEndExtension;
-    const tunnelBack = backZ - settings.tunnelEndExtension;
+    const tunnelEntrance = entranceS + settings.tunnelEndExtension;
+    const tunnelExit = exitS - settings.tunnelEndExtension;
     const tunnel = addMesh(
       'TUNNEL_AcrylicShell',
-      makeProfileShell(innerArch.full, outerArch.full, tunnelFront, tunnelBack, false, false),
+      orientTunnelGeometry(
+        makeProfileShell(innerArch.full, outerArch.full, tunnelEntrance, tunnelExit, false, false),
+        axis,
+        offset,
+      ),
       tunnelGlassMaterial,
       false,
       false,
@@ -1036,49 +1102,78 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     tunnel.renderOrder = 4;
 
     const frameOuterHalf = outerHalf + settings.portalFrameWidth;
-    const frameArch = archProfile(
-      frameOuterHalf,
-      0,
-      wallHeight,
-      innerRise + settings.tunnelGlassThickness + settings.portalFrameWidth,
-      settings.tunnelCurveSegments,
-    );
+    const frameArch = squareRoof
+      ? archProfile(
+        frameOuterHalf,
+        0,
+        wallHeight + settings.tunnelGlassThickness + settings.portalFrameWidth,
+        0,
+        settings.tunnelCurveSegments,
+      )
+      : archProfile(
+        frameOuterHalf,
+        0,
+        wallHeight,
+        innerRise + settings.tunnelGlassThickness + settings.portalFrameWidth,
+        settings.tunnelCurveSegments,
+      );
     addMesh(
       'TUNNEL_01_EntranceFrame',
-      makeProfileShell(
-        outerArch.full,
-        frameArch.full,
-        frontZ + settings.portalFrameDepth,
-        frontZ - 0.015,
-        true,
-        true,
+      orientTunnelGeometry(
+        makeProfileShell(
+          outerArch.full,
+          frameArch.full,
+          entranceS + settings.portalFrameDepth,
+          entranceS - 0.015,
+          true,
+          true,
+        ),
+        axis,
+        offset,
       ),
       frameMaterial,
     );
     addMesh(
       'TUNNEL_02_ExitFrame',
-      makeProfileShell(
-        outerArch.full,
-        frameArch.full,
-        backZ + 0.015,
-        backZ - settings.portalFrameDepth,
-        true,
-        true,
+      orientTunnelGeometry(
+        makeProfileShell(
+          outerArch.full,
+          frameArch.full,
+          exitS + 0.015,
+          exitS - settings.portalFrameDepth,
+          true,
+          true,
+        ),
+        axis,
+        offset,
       ),
       frameMaterial,
     );
 
     const voidHalf = outerHalf + settings.tunnelWaterClearance;
-    const voidArch = archProfile(
-      voidHalf,
-      waterBottom,
-      Math.max(0.01, wallHeight + settings.tunnelWaterClearance - waterBottom),
-      innerRise + settings.tunnelGlassThickness + settings.tunnelWaterClearance,
-      settings.tunnelCurveSegments,
-    );
+    const voidArch = squareRoof
+      ? archProfile(
+        voidHalf,
+        waterBottom,
+        Math.max(0.01, wallHeight + settings.tunnelGlassThickness + settings.tunnelWaterClearance - waterBottom),
+        0,
+        settings.tunnelCurveSegments,
+      )
+      : archProfile(
+        voidHalf,
+        waterBottom,
+        Math.max(0.01, wallHeight + settings.tunnelWaterClearance - waterBottom),
+        innerRise + settings.tunnelGlassThickness + settings.tunnelWaterClearance,
+        settings.tunnelCurveSegments,
+      );
+    const localWaterLoop = toTunnelLocalLoop(waterLoop, axis, offset);
     const volume = addMesh(
       'WATER_Volume',
-      makeWaterVolumeWithTunnel(waterLoop, waterBottom, waterTop - 0.004, voidArch.full, voidArch.roof),
+      orientTunnelGeometry(
+        makeWaterVolumeWithTunnel(localWaterLoop, waterBottom, waterTop - 0.004, voidArch.full, voidArch.roof),
+        axis,
+        offset,
+      ),
       waterVolumeMaterial,
       false,
       false,
@@ -1086,6 +1181,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     volume.renderOrder = 1;
     const surface = addMesh('WATER_Surface', makeFlatWaterSurface(waterLoop, waterTop), waterSurfaceMaterial, false, false);
     surface.renderOrder = 3;
+
   }
 
   const stats = meshStats(group);

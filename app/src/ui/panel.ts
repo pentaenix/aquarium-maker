@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { AquariumSettings, CornerMode, CornerRadii } from '../model/settings';
+import type { AquariumSettings, CornerMode, CornerRadii, GroundPreset, TunnelAxis } from '../model/settings';
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings } from '../model/settings';
 import { createFootprintLoop, offsetRadii } from '../model/aquarium';
 
@@ -27,6 +27,14 @@ interface RangeDefinition {
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 const surfaceLabel = (value: number) => value < 0.34 ? 'Realistic' : value < 0.67 ? 'Balanced' : 'Cartoon';
+const tunnelShapeLabel = (value: number) => value <= 0.015 ? 'Square' : value < 0.55 ? 'Soft arch' : value < 0.98 ? 'Round arch' : 'Tall arch';
+
+const GROUND_PRESETS: Record<GroundPreset, { color: string; variation: number; grain: number }> = {
+  sand: { color: '#c8ad79', variation: 0.22, grain: 0.52 },
+  dirt: { color: '#76533a', variation: 0.44, grain: 0.78 },
+  algae: { color: '#687a49', variation: 0.52, grain: 0.92 },
+  gravel: { color: '#888279', variation: 0.58, grain: 1.45 },
+};
 
 const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'width', label: 'Width', min: 2, max: 30, step: 0.1, unit: 'm', structural: true },
@@ -48,8 +56,9 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'frameOverlap', label: 'Rim overlap', min: 0.01, max: 0.3, step: 0.005, unit: 'm', structural: true },
   { key: 'curveSegments', label: 'Corner quality', min: 2, max: 16, step: 1, structural: true, format: (value) => `${Math.round(value)} segments` },
   { key: 'tunnelWidth', label: 'Passage width', min: 0.8, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'tunnelOffset', label: 'Lateral position', min: -10, max: 10, step: 0.05, unit: 'm', structural: true },
   { key: 'tunnelWallHeight', label: 'Straight wall height', min: 0.35, max: 5, step: 0.05, unit: 'm', structural: true },
-  { key: 'tunnelRoundness', label: 'Arch roundness', min: 0.3, max: 1.35, step: 0.01, structural: true, format: (value) => `${value.toFixed(2)}×` },
+  { key: 'tunnelRoundness', label: 'Roof shape', min: 0, max: 1.35, step: 0.01, structural: true, format: tunnelShapeLabel },
   { key: 'tunnelGlassThickness', label: 'Tunnel acrylic', min: 0.025, max: 0.25, step: 0.005, unit: 'm', structural: true },
   { key: 'tunnelCurveSegments', label: 'Arch quality', min: 5, max: 24, step: 1, structural: true, format: (value) => `${Math.round(value)} segments` },
   { key: 'tunnelEndExtension', label: 'End extension', min: 0, max: 0.8, step: 0.01, unit: 'm', structural: true },
@@ -131,7 +140,16 @@ export class ControlPanel {
       <div class="tab-stage">
         <section class="tab-pane" data-tab-panel="tank">
           ${card('Tank size', 'Authored dimensions in meters', `${rangeMarkup('width')}${rangeMarkup('depth')}${rangeMarkup('height')}<p class="section-note">The preview stays in meters. The game-unit scale is only applied to the downloaded GLB.</p>`)}
-          ${card('Sand bottom', 'Warm procedural substrate', `${colorMarkup('sandColor', 'Sand color')}${rangeMarkup('sandVariation')}${rangeMarkup('sandGrain')}<button class="secondary-action" id="randomize-sand" type="button"><svg viewBox="0 0 24 24"><path d="M4 7h3l10 10h3M4 17h3l3-3m4-4 3-3h3m0 0-2-2m2 2-2 2m2 8-2-2m2 2-2 2" /></svg>Randomize pattern</button>`)}
+          ${card('Ground', 'Choose a ready-made substrate, then fine-tune it', `
+            <div class="ground-presets" role="group" aria-label="Ground material presets">
+              <button type="button" data-ground-preset="sand"><span class="ground-swatch ground-sand"></span><strong>Sand</strong><small>Warm and clean</small></button>
+              <button type="button" data-ground-preset="dirt"><span class="ground-swatch ground-dirt"></span><strong>Dirt</strong><small>Dark and natural</small></button>
+              <button type="button" data-ground-preset="algae"><span class="ground-swatch ground-algae"></span><strong>Algae</strong><small>Organic green</small></button>
+              <button type="button" data-ground-preset="gravel"><span class="ground-swatch ground-gravel"></span><strong>Gravel</strong><small>Coarse stones</small></button>
+            </div>
+            ${colorMarkup('sandColor', 'Ground color')}${rangeMarkup('sandVariation')}${rangeMarkup('sandGrain')}
+            <button class="secondary-action" id="randomize-sand" type="button"><svg viewBox="0 0 24 24"><path d="M4 7h3l10 10h3M4 17h3l3-3m4-4 3-3h3m0 0-2-2m2 2-2 2m2 8-2-2m2 2-2 2" /></svg>Randomize pattern</button>
+          `)}
         </section>
 
         <section class="tab-pane" data-tab-panel="shape" hidden>
@@ -192,13 +210,17 @@ export class ControlPanel {
         </section>
 
         <section class="tab-pane" data-tab-panel="tunnel" hidden>
-          ${card('Walk-through tunnel', 'A dry center passage from entrance to exit', `
+          ${card('Walk-through tunnel', 'Place a dry passage on either tank axis', `
             <div class="feature-toggle-card">
               <div><strong>Enable tunnel</strong><span>Cut through the base, sand, end panes, and water volume</span></div>
               <button class="switch switch-large" id="tunnel-enabled" type="button" role="switch" aria-checked="false"><span></span></button>
             </div>
             <div class="tunnel-editor" id="tunnel-editor">
-              <div class="tunnel-direction"><span><b>01</b> Entrance · Front</span><svg viewBox="0 0 42 14"><path d="M2 7h36m-5-4 5 4-5 4" /></svg><span><b>02</b> Exit · Back</span></div>
+              <div class="tunnel-axis-selector" role="group" aria-label="Tunnel direction">
+                <button type="button" data-tunnel-axis="depth"><svg viewBox="0 0 24 24"><path d="M12 3v18m-4-4 4 4 4-4M8 7l4-4 4 4" /></svg><span><strong>Front ↔ Back</strong><small>Depth axis</small></span></button>
+                <button type="button" data-tunnel-axis="width"><svg viewBox="0 0 24 24"><path d="M3 12h18m-4-4 4 4-4 4M7 8l-4 4 4 4" /></svg><span><strong>Left ↔ Right</strong><small>Width axis</small></span></button>
+              </div>
+              <div class="tunnel-direction"><span id="tunnel-entrance-label"><b>01</b> Entrance · Front</span><svg viewBox="0 0 42 14"><path d="M2 7h36m-5-4 5 4-5 4" /></svg><span id="tunnel-exit-label"><b>02</b> Exit · Back</span></div>
               <div class="tunnel-preview-wrap">
                 <svg id="tunnel-preview" viewBox="0 0 240 132" role="img" aria-label="Tunnel cross section preview">
                   <rect class="tunnel-water-background" x="12" y="12" width="216" height="104" rx="8"></rect>
@@ -210,10 +232,16 @@ export class ControlPanel {
                 <div class="tunnel-off-message"><strong>Tunnel is off</strong><span>Enable it to edit the passage.</span></div>
               </div>
               ${rangeMarkup('tunnelWidth')}
+              ${rangeMarkup('tunnelOffset')}
               ${rangeMarkup('tunnelWallHeight')}
+              <div class="tunnel-shape-presets" role="group" aria-label="Tunnel roof presets">
+                <button type="button" data-tunnel-shape="square"><span class="tunnel-shape-icon shape-square"></span><strong>Square</strong></button>
+                <button type="button" data-tunnel-shape="soft"><span class="tunnel-shape-icon shape-soft"></span><strong>Soft</strong></button>
+                <button type="button" data-tunnel-shape="arch"><span class="tunnel-shape-icon shape-arch"></span><strong>Arch</strong></button>
+              </div>
               ${rangeMarkup('tunnelRoundness')}
               <details class="advanced-details"><summary>Advanced tunnel fit</summary><div>${rangeMarkup('tunnelGlassThickness')}${rangeMarkup('portalFrameWidth')}${rangeMarkup('portalFrameDepth')}${rangeMarkup('tunnelEndExtension')}${rangeMarkup('tunnelWaterClearance')}${rangeMarkup('tunnelCurveSegments')}</div></details>
-              <p class="section-note">The passage has no floor mesh. Water is generated as one continuous volume with an arched dry void.</p>
+              <p class="section-note">The passage has no floor mesh. Water is generated as one continuous volume around the selected tunnel profile.</p>
             </div>
           `, 'tunnel-card')}
         </section>
@@ -316,6 +344,40 @@ export class ControlPanel {
       this.callbacks.onChange(this.settings, true);
     });
 
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tunnel-axis]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.settings.tunnelAxis = button.dataset.tunnelAxis as TunnelAxis;
+        this.settings.tunnelOffset = 0;
+        normalizeSettings(this.settings);
+        this.refresh();
+        this.callbacks.onChange(this.settings, true);
+      });
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tunnel-shape]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const shape = button.dataset.tunnelShape;
+        this.settings.tunnelRoundness = shape === 'square' ? 0 : shape === 'soft' ? 0.48 : 0.9;
+        normalizeSettings(this.settings);
+        this.refresh();
+        this.callbacks.onChange(this.settings, true);
+      });
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-ground-preset]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const preset = button.dataset.groundPreset as GroundPreset;
+        const values = GROUND_PRESETS[preset];
+        this.settings.groundPreset = preset;
+        this.settings.sandColor = values.color;
+        this.settings.sandVariation = values.variation;
+        this.settings.sandGrain = values.grain;
+        this.settings.sandSeed = Math.floor(Math.random() * 1_000_000_000);
+        this.refresh();
+        this.callbacks.onChange(this.settings, false);
+      });
+    });
+
     this.root.querySelectorAll<HTMLButtonElement>('[data-water-preset]').forEach((button) => {
       button.addEventListener('click', () => {
         const preset = button.dataset.waterPreset;
@@ -386,18 +448,25 @@ export class ControlPanel {
   }
 
   private refresh(): void {
+    const tunnelCrossDimension = this.settings.tunnelAxis === 'depth' ? this.settings.width : this.settings.depth;
+    const maxTunnelWidth = Math.max(0.9, tunnelCrossDimension - 0.5);
+    const tunnelEdgeMargin = this.settings.glassThickness + this.settings.portalFrameWidth + this.settings.tunnelGlassThickness + 0.12;
+    const maxTunnelOffset = Math.max(0, tunnelCrossDimension * 0.5 - this.settings.tunnelWidth * 0.5 - tunnelEdgeMargin);
+
     for (const definition of RANGE_DEFINITIONS) {
       const value = Number((this.settings as unknown as Record<string, number>)[definition.key]);
       const range = this.root.querySelector<HTMLInputElement>(`[data-range-key="${definition.key}"]`);
       const number = this.root.querySelector<HTMLInputElement>(`[data-number-key="${definition.key}"]`);
       const output = this.root.querySelector<HTMLOutputElement>(`#${definition.key}-output`);
       if (range) {
-        if (definition.key === 'tunnelWidth') range.max = String(Math.max(0.9, this.settings.width - 1));
+        if (definition.key === 'tunnelWidth') range.max = String(maxTunnelWidth);
+        if (definition.key === 'tunnelOffset') { range.min = String(-maxTunnelOffset); range.max = String(maxTunnelOffset); }
         if (definition.key === 'tunnelWallHeight') range.max = String(Math.max(0.45, this.settings.height * 0.52));
         range.value = String(value);
       }
       if (number) {
-        if (definition.key === 'tunnelWidth') number.max = String(Math.max(0.9, this.settings.width - 1));
+        if (definition.key === 'tunnelWidth') number.max = String(maxTunnelWidth);
+        if (definition.key === 'tunnelOffset') { number.min = String(-maxTunnelOffset); number.max = String(maxTunnelOffset); }
         if (definition.key === 'tunnelWallHeight') number.max = String(Math.max(0.45, this.settings.height * 0.52));
         number.value = String(Number(value.toFixed(3)));
       }
@@ -411,6 +480,7 @@ export class ControlPanel {
 
     this.refreshTabs();
     this.refreshCornerEditor();
+    this.refreshGroundPreset();
     this.refreshWaterStyle();
     this.refreshTunnelEditor();
     const exportDimensions = this.root.querySelector<HTMLElement>('#export-dimensions')!;
@@ -420,6 +490,12 @@ export class ControlPanel {
   private refreshTabs(): void {
     this.root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((button) => button.classList.toggle('is-active', button.dataset.tab === this.activeTab));
     this.root.querySelectorAll<HTMLElement>('[data-tab-panel]').forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== this.activeTab; });
+  }
+
+  private refreshGroundPreset(): void {
+    this.root.querySelectorAll<HTMLButtonElement>('[data-ground-preset]').forEach((button) => {
+      button.classList.toggle('is-active', button.dataset.groundPreset === this.settings.groundPreset);
+    });
   }
 
   private refreshWaterStyle(): void {
@@ -435,12 +511,40 @@ export class ControlPanel {
     const editor = this.root.querySelector<HTMLElement>('#tunnel-editor')!;
     editor.classList.toggle('is-disabled', !this.settings.tunnelEnabled);
 
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tunnel-axis]').forEach((axisButton) => {
+      axisButton.classList.toggle('is-active', axisButton.dataset.tunnelAxis === this.settings.tunnelAxis);
+    });
+    const depthAxis = this.settings.tunnelAxis === 'depth';
+    this.root.querySelector<HTMLElement>('#tunnel-entrance-label')!.innerHTML = depthAxis
+      ? '<b>01</b> Entrance · Front'
+      : '<b>01</b> Entrance · Left';
+    this.root.querySelector<HTMLElement>('#tunnel-exit-label')!.innerHTML = depthAxis
+      ? '<b>02</b> Exit · Back'
+      : '<b>02</b> Exit · Right';
+
+    const offsetControl = this.root.querySelector<HTMLElement>('[data-control="tunnelOffset"]')!;
+    const offsetLabel = offsetControl.querySelector<HTMLLabelElement>('label')!;
+    const offsetOutput = this.root.querySelector<HTMLOutputElement>('#tunnelOffset-output')!;
+    offsetLabel.textContent = depthAxis ? 'Left / right position' : 'Front / back position';
+    const offset = this.settings.tunnelOffset;
+    if (Math.abs(offset) < 0.025) offsetOutput.textContent = 'Centered';
+    else if (depthAxis) offsetOutput.textContent = `${Math.abs(offset).toFixed(2)} m ${offset > 0 ? 'right' : 'left'}`;
+    else offsetOutput.textContent = `${Math.abs(offset).toFixed(2)} m ${offset > 0 ? 'front' : 'back'}`;
+
+    const selectedShape = this.settings.tunnelRoundness <= 0.015
+      ? 'square'
+      : this.settings.tunnelRoundness < 0.7 ? 'soft' : 'arch';
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tunnel-shape]').forEach((shapeButton) => {
+      shapeButton.classList.toggle('is-active', shapeButton.dataset.tunnelShape === selectedShape);
+    });
+
     const width = 240;
     const floorY = 112;
     const centerX = width * 0.5;
     const half = Math.min(72, 28 + this.settings.tunnelWidth * 11);
-    const wallPixels = Math.min(54, 18 + this.settings.tunnelWallHeight * 22);
-    const risePixels = Math.min(55, half * 0.52 * this.settings.tunnelRoundness);
+    const wallPixels = Math.min(62, 18 + this.settings.tunnelWallHeight * 22);
+    const squareRoof = this.settings.tunnelRoundness <= 0.015;
+    const risePixels = squareRoof ? 0 : Math.min(55, half * 0.52 * this.settings.tunnelRoundness);
     const springY = floorY - wallPixels;
     const thickness = Math.max(4, this.settings.tunnelGlassThickness * 55);
     const innerLeft = centerX - half;
@@ -449,11 +553,22 @@ export class ControlPanel {
     const outerRight = innerRight + thickness;
     const innerCrown = springY - risePixels;
     const outerCrown = innerCrown - thickness;
-    const innerPath = `M ${innerLeft} ${floorY} L ${innerLeft} ${springY} Q ${centerX} ${innerCrown - risePixels * 0.35} ${innerRight} ${springY} L ${innerRight} ${floorY}`;
-    const outerPath = `M ${outerLeft} ${floorY} L ${outerLeft} ${springY} Q ${centerX} ${outerCrown - risePixels * 0.35} ${outerRight} ${springY} L ${outerRight} ${floorY}`;
+
+    let innerPath: string;
+    let outerPath: string;
+    let waterPath: string;
+    if (squareRoof) {
+      innerPath = `M ${innerLeft} ${floorY} V ${springY} H ${innerRight} V ${floorY}`;
+      outerPath = `M ${outerLeft} ${floorY} V ${outerCrown} H ${outerRight} V ${floorY}`;
+      waterPath = `M 12 12 H 228 V 116 H ${outerRight} V ${outerCrown} H ${outerLeft} V 116 H 12 Z`;
+    } else {
+      innerPath = `M ${innerLeft} ${floorY} L ${innerLeft} ${springY} Q ${centerX} ${innerCrown - risePixels * 0.35} ${innerRight} ${springY} L ${innerRight} ${floorY}`;
+      outerPath = `M ${outerLeft} ${floorY} L ${outerLeft} ${springY} Q ${centerX} ${outerCrown - risePixels * 0.35} ${outerRight} ${springY} L ${outerRight} ${floorY}`;
+      waterPath = `M 12 12 H 228 V 116 H ${outerRight} V ${springY} Q ${centerX} ${outerCrown - risePixels * 0.35} ${outerLeft} ${springY} V 116 H 12 Z`;
+    }
     this.root.querySelector<SVGPathElement>('#tunnel-preview-inner')!.setAttribute('d', innerPath);
     this.root.querySelector<SVGPathElement>('#tunnel-preview-outer')!.setAttribute('d', outerPath);
-    this.root.querySelector<SVGPathElement>('#tunnel-preview-water')!.setAttribute('d', `M 12 12 H 228 V 116 H ${outerRight} V ${springY} Q ${centerX} ${outerCrown - risePixels * 0.35} ${outerLeft} ${springY} V 116 H 12 Z`);
+    this.root.querySelector<SVGPathElement>('#tunnel-preview-water')!.setAttribute('d', waterPath);
   }
 
   private refreshCornerEditor(): void {
@@ -500,9 +615,17 @@ export class ControlPanel {
     const tunnel = this.root.querySelector<SVGPathElement>('#corner-preview-tunnel')!;
     if (this.settings.tunnelEnabled) {
       const half = this.settings.tunnelWidth * 0.5 * scale;
-      const top = centerY - this.settings.depth * 0.5 * scale - 7;
-      const bottom = centerY + this.settings.depth * 0.5 * scale + 7;
-      tunnel.setAttribute('d', `M ${centerX - half} ${top} L ${centerX - half} ${bottom} M ${centerX + half} ${top} L ${centerX + half} ${bottom}`);
+      if (this.settings.tunnelAxis === 'depth') {
+        const tunnelCenterX = centerX + this.settings.tunnelOffset * scale;
+        const top = centerY - this.settings.depth * 0.5 * scale - 7;
+        const bottom = centerY + this.settings.depth * 0.5 * scale + 7;
+        tunnel.setAttribute('d', `M ${tunnelCenterX - half} ${top} L ${tunnelCenterX - half} ${bottom} M ${tunnelCenterX + half} ${top} L ${tunnelCenterX + half} ${bottom}`);
+      } else {
+        const tunnelCenterY = centerY + this.settings.tunnelOffset * scale;
+        const left = centerX - this.settings.width * 0.5 * scale - 7;
+        const right = centerX + this.settings.width * 0.5 * scale + 7;
+        tunnel.setAttribute('d', `M ${left} ${tunnelCenterY - half} L ${right} ${tunnelCenterY - half} M ${left} ${tunnelCenterY + half} L ${right} ${tunnelCenterY + half}`);
+      }
       tunnel.style.display = '';
     } else tunnel.style.display = 'none';
 

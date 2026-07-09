@@ -2,42 +2,63 @@
 
 Aquarium Maker is a polished, frontend-only public-aquarium generator. It builds the model, procedural textures, live Three.js preview, and downloadable GLB entirely in the browser—no server, login, upload, API key, or database required.
 
-Version 1.3 adds an optional walk-through tunnel, more expressive water-surface art direction, and per-corner construction modes without cluttering the main tank controls.
+Version 1.4 expands the tunnel into a positionable, two-axis system with square or arched profiles, and adds finished ground presets for sand, dirt, algae, and gravel.
 
 ## Editor layout
 
 The settings panel is split into focused tabs:
 
-- **Tank** — width, depth, height, water level, and the most common dimensions.
+- **Tank** — width, depth, height, and ground presets with procedural fine tuning.
 - **Corners** — visual top-down editor with independent radius and construction mode for every corner.
 - **Water** — realistic-to-cartoon surface presets plus wave character, definition, size, tint, and color.
-- **Tunnel** — optional centered entrance-to-exit acrylic tunnel and its arch, frame, and clearance controls.
-- **Details** — frame, glass, sand, quality, and export settings.
+- **Tunnel** — optional positionable acrylic tunnel with direction, square/arched shape, frame, and clearance controls.
+- **Details** — frame, glass, quality, and export settings.
 
 The tunnel is disabled by default, so normal aquarium work stays uncluttered.
 
 ## Tunnel system
 
-The tunnel runs through the middle of the aquarium in a clear order:
+The tunnel can run on either tank axis:
+
+- **Front ↔ Back** — entrance at the front and exit at the back.
+- **Left ↔ Right** — entrance at the left and exit at the right.
+
+A lateral-position control moves the passage across the tank while automatically respecting the available wall space. On the depth axis this means left/right placement; on the width axis it means front/back placement.
+
+The tunnel is still exported in a clear order:
 
 1. `TUNNEL_01_EntranceFrame`
 2. `TUNNEL_AcrylicShell`
 3. `TUNNEL_02_ExitFrame`
 
-It has no generated floor. The base, lower rim, and sand are cut away beneath the passage so a game-world floor can continue through it.
+It has no generated floor. The base, lower rim, and ground substrate are cut away beneath the passage so a game-world floor can continue through it.
 
 Tunnel controls include:
 
-- width
+- direction axis
+- lateral position
+- passage width
 - vertical wall height
-- arch roundness
+- square, soft, or rounded roof profile
+- continuously adjustable roof roundness
 - acrylic thickness
 - curve quality
 - entrance and exit extension
 - portal frame width and depth
 - water-to-glass clearance
 
-The water is generated as one continuous volume with an arched dry void around the tunnel rather than overlapping left, right, and overhead blocks.
+A roundness of zero produces a genuinely square tunnel with a flat ceiling. Rounded values generate the curved acrylic arch. The water remains one continuous volume with a matching dry void around either profile.
+
+## Ground presets
+
+The **Tank** tab includes four starting materials:
+
+- **Sand** — warm, restrained fine grain.
+- **Dirt** — darker clumps and natural mottling.
+- **Algae** — organic green patches and subtle filaments.
+- **Gravel** — coarse procedural pebble cells.
+
+Each preset updates the base color, variation, and grain scale, while all three remain editable. The randomize button changes the procedural seed without adding external texture files.
 
 ## Water art direction
 
@@ -67,7 +88,7 @@ The standard default aquarium retains parity with the Python generator:
 - 1,014 vertices
 - 1,008 triangles
 
-The default tunnel configuration validates as:
+The default rounded depth-axis tunnel validates as:
 
 - 12 named meshes
 - 2,829 vertices
@@ -163,7 +184,7 @@ Edit source files under `app/`, then run `npm run build`. Do not manually edit g
 - **Controls appear but the model does not:** enable browser hardware acceleration and reload.
 - **Opening locally:** open `standalone.html`; do not open `app/index.html` directly.
 - **A deployed page shows broken source paths:** publish the repository root, `/docs`, or use the included GitHub Actions workflow—not the `app/` directory.
-- **An older configuration behaves strangely:** press **Reset**. Version 1.3 uses a new settings-storage key so prior tunnel-less settings do not corrupt the new editor.
+- **An older configuration behaves strangely:** press **Reset**. Version 1.4 uses a new settings-storage key so older tunnel settings do not conflict with axis and offset controls.
 - **Transparent water differs between engines:** the GLB preserves named `WATER_Volume` and `WATER_Surface` meshes so an engine-native water shader can replace the portable material cleanly.
 
 ## Browser support

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { GroundPreset } from './settings';
 
 function hash2(x: number, y: number, seed: number): number {
   let value = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 2147483647);
@@ -62,7 +63,8 @@ function makeTexture(canvas: HTMLCanvasElement, color = true): THREE.CanvasTextu
   return texture;
 }
 
-export function createSandTexture(
+export function createGroundTexture(
+  preset: GroundPreset,
   color: string,
   variation: number,
   grain: number,
@@ -81,19 +83,72 @@ export function createSandTexture(
   const broadScale = 2.4 + grain * 2.2;
   const fineScale = 18 + grain * 34;
 
+  const pebbleSample = (u: number, v: number): number => {
+    const scale = 16 + grain * 10;
+    const gx = u * scale;
+    const gy = v * scale;
+    const cellX = Math.floor(gx);
+    const cellY = Math.floor(gy);
+    let nearest = 10;
+    let shade = 0;
+    for (let oy = -1; oy <= 1; oy += 1) {
+      for (let ox = -1; ox <= 1; ox += 1) {
+        const px = cellX + ox + 0.18 + hash2(cellX + ox, cellY + oy, seed + 7103) * 0.64;
+        const py = cellY + oy + 0.18 + hash2(cellX + ox, cellY + oy, seed + 9011) * 0.64;
+        const distance = Math.hypot(gx - px, gy - py);
+        if (distance < nearest) {
+          nearest = distance;
+          shade = hash2(cellX + ox, cellY + oy, seed + 3301) - 0.5;
+        }
+      }
+    }
+    const pebble = Math.max(0, 1 - nearest * 1.8);
+    return pebble * (0.72 + shade * 0.52) - (1 - pebble) * 0.18;
+  };
+
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const u = x / width;
       const v = y / height;
       const broad = fbm(u * broadScale, v * broadScale, seed, 4) - 0.5;
       const fine = fbm(u * fineScale, v * fineScale, seed + 4409, 3) - 0.5;
-      const speck = hash2(x, y, seed + 971) > 0.985 ? -0.65 : 0;
-      const delta = variation * (broad * 46 + fine * 19 + speck * 28);
-      const warmShift = variation * broad * 8;
+      const point = hash2(x, y, seed + 971);
+      let deltaR = 0;
+      let deltaG = 0;
+      let deltaB = 0;
+
+      if (preset === 'dirt') {
+        const clump = fbm(u * (6 + grain * 2), v * (6 + grain * 2), seed + 707, 4) - 0.5;
+        const darkSpeck = point > 0.977 ? -32 : 0;
+        deltaR = variation * (broad * 50 + fine * 22 + clump * 28 + darkSpeck);
+        deltaG = variation * (broad * 39 + fine * 17 + clump * 18 + darkSpeck * 0.8);
+        deltaB = variation * (broad * 27 + fine * 12 + clump * 10 + darkSpeck * 0.58);
+      } else if (preset === 'algae') {
+        const patch = fbm(u * (3.2 + grain * 1.8), v * (3.2 + grain * 1.8), seed + 1811, 5) - 0.46;
+        const filament = Math.sin((u * 1.7 + v * 0.8 + broad * 0.22) * Math.PI * 8) * 0.5;
+        const brownSpot = point > 0.989 ? -22 : 0;
+        deltaR = variation * (broad * 27 + fine * 10 + patch * 18 + brownSpot);
+        deltaG = variation * (broad * 48 + fine * 16 + patch * 55 + filament * 9 + brownSpot * 0.55);
+        deltaB = variation * (broad * 20 + fine * 9 + patch * 13 + brownSpot * 0.35);
+      } else if (preset === 'gravel') {
+        const pebble = pebbleSample(u, v);
+        const speck = point > 0.993 ? 26 : 0;
+        deltaR = variation * (pebble * 72 + broad * 18 + speck);
+        deltaG = variation * (pebble * 68 + broad * 17 + speck * 0.9);
+        deltaB = variation * (pebble * 62 + broad * 16 + speck * 0.78);
+      } else {
+        const speck = point > 0.985 ? -0.65 : 0;
+        const delta = variation * (broad * 46 + fine * 19 + speck * 28);
+        const warmShift = variation * broad * 8;
+        deltaR = delta + warmShift;
+        deltaG = delta * 0.88 + warmShift * 0.4;
+        deltaB = delta * 0.62 - warmShift * 0.2;
+      }
+
       const index = (y * width + x) * 4;
-      image.data[index] = clampByte(baseR + delta + warmShift);
-      image.data[index + 1] = clampByte(baseG + delta * 0.88 + warmShift * 0.4);
-      image.data[index + 2] = clampByte(baseB + delta * 0.62 - warmShift * 0.2);
+      image.data[index] = clampByte(baseR + deltaR);
+      image.data[index + 1] = clampByte(baseG + deltaG);
+      image.data[index + 2] = clampByte(baseB + deltaB);
       image.data[index + 3] = 255;
     }
   }

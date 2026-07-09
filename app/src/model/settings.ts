@@ -6,6 +6,8 @@ export interface CornerRadii {
 }
 
 export type CornerMode = 'rounded' | 'chamfer' | 'square';
+export type TunnelAxis = 'depth' | 'width';
+export type GroundPreset = 'sand' | 'dirt' | 'algae' | 'gravel';
 
 export interface CornerModes {
   frontLeft: CornerMode;
@@ -29,6 +31,7 @@ export interface AquariumSettings {
   frameOverlap: number;
   glassThickness: number;
 
+  groundPreset: GroundPreset;
   sandHeight: number;
   sandWallGap: number;
   sandColor: string;
@@ -46,6 +49,8 @@ export interface AquariumSettings {
   waterSeed: number;
 
   tunnelEnabled: boolean;
+  tunnelAxis: TunnelAxis;
+  tunnelOffset: number;
   tunnelWidth: number;
   tunnelWallHeight: number;
   tunnelRoundness: number;
@@ -84,6 +89,7 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   frameOverlap: 0.045,
   glassThickness: 0.055,
 
+  groundPreset: 'sand',
   sandHeight: 0.07,
   sandWallGap: 0.045,
   sandColor: '#c8ad79',
@@ -101,6 +107,8 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   waterSeed: 94817,
 
   tunnelEnabled: false,
+  tunnelAxis: 'depth',
+  tunnelOffset: 0,
   tunnelWidth: 2.45,
   tunnelWallHeight: 1.02,
   tunnelRoundness: 0.86,
@@ -120,6 +128,14 @@ export function cloneSettings(source: AquariumSettings = DEFAULT_SETTINGS): Aqua
     radii: { ...source.radii },
     cornerModes: { ...source.cornerModes },
   };
+}
+
+function isTunnelAxis(value: unknown): value is TunnelAxis {
+  return value === 'depth' || value === 'width';
+}
+
+function isGroundPreset(value: unknown): value is GroundPreset {
+  return value === 'sand' || value === 'dirt' || value === 'algae' || value === 'gravel';
 }
 
 function isCornerMode(value: unknown): value is CornerMode {
@@ -157,6 +173,7 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
     settings.topRimHeight *= ratio;
   }
 
+  if (!isGroundPreset(settings.groundPreset)) settings.groundPreset = 'sand';
   settings.sandHeight = clamp(settings.sandHeight, 0.02, Math.max(0.03, settings.height * 0.15));
   settings.sandWallGap = clamp(settings.sandWallGap, 0.01, 0.3);
   settings.sandVariation = clamp(settings.sandVariation, 0, 1);
@@ -170,15 +187,20 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.waterWaveScale = clamp(settings.waterWaveScale, 0, 1);
 
   settings.tunnelEnabled = Boolean(settings.tunnelEnabled);
-  settings.tunnelWidth = clamp(settings.tunnelWidth, 0.8, Math.max(0.9, settings.width - 1));
+  if (!isTunnelAxis(settings.tunnelAxis)) settings.tunnelAxis = 'depth';
+  const tunnelCrossDimension = settings.tunnelAxis === 'depth' ? settings.width : settings.depth;
+  settings.tunnelWidth = clamp(settings.tunnelWidth, 0.8, Math.max(0.9, tunnelCrossDimension - 0.5));
   settings.tunnelWallHeight = clamp(settings.tunnelWallHeight, 0.35, Math.max(0.45, settings.height * 0.52));
-  settings.tunnelRoundness = clamp(settings.tunnelRoundness, 0.3, 1.35);
+  settings.tunnelRoundness = clamp(settings.tunnelRoundness, 0, 1.35);
   settings.tunnelGlassThickness = clamp(settings.tunnelGlassThickness, 0.025, 0.25);
   settings.tunnelCurveSegments = Math.round(clamp(settings.tunnelCurveSegments, 5, 24));
   settings.tunnelEndExtension = clamp(settings.tunnelEndExtension, 0, 0.8);
   settings.portalFrameWidth = clamp(settings.portalFrameWidth, 0.04, 0.45);
   settings.portalFrameDepth = clamp(settings.portalFrameDepth, 0.04, 0.65);
   settings.tunnelWaterClearance = clamp(settings.tunnelWaterClearance, 0.005, 0.12);
+  const tunnelEdgeMargin = settings.glassThickness + settings.portalFrameWidth + settings.tunnelGlassThickness + 0.12;
+  const maxTunnelOffset = Math.max(0, tunnelCrossDimension * 0.5 - settings.tunnelWidth * 0.5 - tunnelEdgeMargin);
+  settings.tunnelOffset = clamp(settings.tunnelOffset, -maxTunnelOffset, maxTunnelOffset);
 
   settings.exportScale = clamp(settings.exportScale, 1, 100);
   return settings;
