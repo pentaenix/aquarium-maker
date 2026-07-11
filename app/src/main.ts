@@ -6,7 +6,7 @@ import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aq
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, type AquariumSettings } from './model/settings';
 import { ControlPanel } from './ui/panel';
 
-const STORAGE_KEY = 'aquarium-maker-settings-v6-composable';
+const STORAGE_KEY = 'aquarium-maker-settings-v7-terrain';
 
 type CameraView = 'iso' | 'front' | 'side' | 'top' | 'fit';
 
@@ -44,6 +44,8 @@ function mergeSettings(partial: Partial<AquariumSettings>): AquariumSettings {
     ...partial,
     radii: { ...DEFAULT_SETTINGS.radii, ...partial.radii },
     cornerModes: { ...DEFAULT_SETTINGS.cornerModes, ...partial.cornerModes },
+    shapeCornerRadii: { ...DEFAULT_SETTINGS.shapeCornerRadii, ...partial.shapeCornerRadii },
+    shapeCornerModes: { ...DEFAULT_SETTINGS.shapeCornerModes, ...partial.shapeCornerModes },
   });
 }
 
@@ -116,7 +118,8 @@ try {
   controls.minDistance = 1;
   controls.maxDistance = 120;
   controls.maxPolarAngle = Math.PI * 0.49;
-  controls.target.set(0, settings.height * 0.42, 0);
+  const initialHeight = settings.profile === 'belowFloor' ? settings.heightAboveFloor : settings.profile === 'touchPool' ? settings.touchPoolHeight : settings.height;
+  controls.target.set(0, initialHeight * 0.42, 0);
 
   const pmrem = new THREE.PMREMGenerator(renderer);
   environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -155,6 +158,8 @@ scene.add(ground);
 
 let currentBuild: AquariumBuild | null = null;
 let modelGroup: THREE.Group | null = null;
+let lastValidSettings = cloneSettings(settings);
+let panel: ControlPanel | null = null;
 let rebuildTimer = 0;
 let firstBuild = true;
 let cameraAnimationToken = 0;
@@ -162,7 +167,9 @@ let cameraAnimationToken = 0;
 function updateStats(): void {
   const visibleHeight = settings.profile === 'belowFloor'
     ? settings.heightAboveFloor + settings.depthBelowFloor
-    : settings.height;
+    : settings.profile === 'touchPool'
+      ? settings.touchPoolHeight
+      : settings.height;
   const profileLabel = settings.profile === 'belowFloor' ? 'below floor' : settings.profile === 'touchPool' ? 'touch pool' : 'standard';
   requireElement<HTMLElement>('#dimension-stat').textContent =
     `${settings.width.toFixed(1)} × ${settings.depth.toFixed(1)} × ${visibleHeight.toFixed(1)} m · ${profileLabel}`;
@@ -181,6 +188,7 @@ function rebuildNow(autoFrame = false): void {
     currentBuild = nextBuild;
     modelGroup = nextBuild.group;
     scene.add(nextBuild.group);
+    lastValidSettings = cloneSettings(settings);
     updateStats();
     saveSettings();
 
@@ -190,7 +198,11 @@ function rebuildNow(autoFrame = false): void {
     }
   } catch (error) {
     console.error('Could not rebuild aquarium:', error);
-    showToast('Those settings could not be applied');
+    const detail = error instanceof Error ? error.message : 'Those settings could not be applied';
+    showToast(detail.length > 92 ? `${detail.slice(0, 89)}…` : detail);
+    settings = cloneSettings(lastValidSettings);
+    panel?.setSettings(settings);
+    updateStats();
   }
 }
 
@@ -314,7 +326,7 @@ async function downloadModel(): Promise<void> {
   }
 }
 
-const panel = new ControlPanel(controlRoot, settings, {
+panel = new ControlPanel(controlRoot, settings, {
   onChange: (nextSettings, structural) => {
     settings = nextSettings;
     updateStats();
@@ -363,7 +375,7 @@ function render(): void {
 }
 
 rebuildNow(true);
-panel.setSettings(settings);
+panel?.setSettings(settings);
 render();
 
 // Small non-UI test hook used by the repository's validation workflow.

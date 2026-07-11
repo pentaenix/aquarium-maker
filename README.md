@@ -1,66 +1,116 @@
 # Aquarium Maker
 
-Aquarium Maker is a frontend-only GLB generator for game-ready public aquarium models. It runs locally in the browser, previews the model in real time, and exports a `.glb` without uploading anything.
+Aquarium Maker is a finished frontend-only editor for designing public-aquarium models, previewing them in real time, and downloading game-ready GLB files. Everything runs in the browser: no account, server, upload, API key, or database is required.
 
-## v1.5 highlights
+## v1.6 — composable tanks and terrain
 
-This version reorganizes the app around composable aquarium decisions instead of one giant list of tank types.
+This release is a structural repair and expansion of the aquarium generator.
 
-### Shape
+### A cleaner editor
 
-Choose the top-down footprint:
+The controls are divided by the decision the user is making:
 
-- Rectangle
-- L shape
-- U shape
+- **Shape** — footprint, size, vertical dimensions, arm dimensions, and corner treatment
+- **Profile** — standard aquarium, below-floor aquarium, or touch pool
+- **Tunnel** — direction, offset, arch/square profile, frames, glass, and below-floor tunnel floor
+- **Water** — realistic through cartoon presets, tint, waves, and surface definition
+- **Ground** — material preset, color/noise, and real floor deformation
+- **Export** — file name and game-unit scale
 
-Rectangle keeps the polished rounded-corner system with per-corner modes: rounded, flat pane, or square. L and U footprints use clean concave layouts and are prepared for deeper future corner editing.
+Controls that do not apply to the current profile are hidden. For example, a below-floor tank shows **Above floor** and **Below floor** in Shape instead of the unused standard height slider.
 
-### Profile
+### True touch pools
 
-Choose how the aquarium exists vertically:
+Touch pools no longer behave like short glass aquariums.
 
-- Standard aquarium
-- Below-floor aquarium
-- Touch pool
+- Default total height: **0.5 m**
+- Opaque basin walls and floor
+- Broad touch rim
+- Shallow configurable water depth
+- Optional pedestal
+- No acrylic wall mesh
+- Rectangle, L, and U footprints supported
+- Tunnels intentionally unavailable for touch pools
 
-The below-floor profile matches the POC direction: the tank extends into negative Z, exports no floor polygon, has a normal floor-level rim, and uses an opaque structural body below the game floor. The touch-pool profile is shallow and disables tunnel controls by design.
+### Rebuilt L and U shapes
 
-### Tunnel
+L- and U-shaped tanks now use shared polygon regions for the base, rims, acrylic, water, and substrate. This removes overlapping rim meshes and the associated z-fighting and normal glitches.
 
-The Tunnel tab is now compatibility-aware. Tunnels are available for rectangle standard and below-floor tanks. Below-floor tunnel tanks add named glass-floor and side-rim meshes:
+Every visible corner can be edited independently, including concave inner elbows. Each corner supports:
 
-- `TUNNEL_GlassFloor`
-- `TUNNEL_LeftSideRim`
-- `TUNNEL_RightSideRim`
+- Rounded
+- Flat diagonal pane
+- Square
+- Independent radius
 
-Touch pools and L/U footprints intentionally disable tunnels for now so the exported geometry stays valid and predictable.
+### Tunnels in rectangle, L, and U tanks
 
-### Water and ground
+Straight tunnels can now be placed through all three footprints.
 
-Water and ground are separated into their own tabs. Ground presets include sand, dirt, algae, and gravel. Water presets include realistic, balanced, and cartoon surface styles.
+- Front-to-back or left-to-right direction
+- Lateral offset control
+- Square, soft, or arched roof
+- Automatic selection of a continuous valid arm through concave footprints
+- Standard and below-floor profiles
+- Below-floor tunnels can include a named glass floor and side rims
 
-## Deploying to GitHub Pages
+Some offset/width combinations cannot physically cross a continuous part of an L or U shape. When that happens, the app keeps the last valid model, restores the prior controls, and explains the invalid placement instead of exporting mismatched geometry.
 
-Use the complete repository ZIP, push it to your repository, then enable GitHub Pages. The project includes:
+### Below-floor profile
 
-- `dist/` for Vite output
-- `docs/` for GitHub Pages fallback deployments
-- root `index.html` / `404.html` for direct static hosting
-- `.github/workflows/deploy.yml` for GitHub Actions publishing
+- Tank body extends into negative Y in the browser’s Y-up model space
+- No floor polygon is exported
+- Normal floor-level rim
+- Opaque structural body below the game floor
+- Transparent viewing section above the floor
+- Separate above-floor and below-floor heights
+- Compatible with rectangle, L, U, and tunnels
+
+### Deformed substrate
+
+Ground is no longer limited to a flat textured plane.
+
+The Ground tab includes:
+
+- Floor irregularity
+- Mound size
+- Mound count
+- Terrain detail
+- Regeneratable terrain seed
+
+The terrain is a shared indexed mesh with edge fading and smooth normals. Large tanks automatically receive enough subdivision to avoid the oversized isolated triangles seen in earlier builds. Sand, dirt, algae, and gravel presets remain available.
 
 ## Development
 
 ```bash
 npm install
-npm run build
+npm run check
 npm run validate:model
+npm run build
 ```
+
+`npm run validate:model` exercises standard, touch-pool, below-floor, rectangle/L/U, mixed-corner, large-terrain, and tunnel combinations. It fails on invalid vertices, indices, normals, or degenerate triangles.
+
+## GitHub Pages deployment
+
+The complete repository includes several deployment options:
+
+- `.github/workflows/deploy.yml` — recommended GitHub Actions deployment
+- `docs/` — GitHub Pages branch-folder deployment
+- root `index.html` and `assets/` — direct static hosting
+- `standalone.html` — one-file local/offline version
+
+Recommended setup:
+
+1. Replace the repository contents with this package.
+2. Push to `main`.
+3. Open **Settings → Pages**.
+4. Select **GitHub Actions** as the source.
 
 ## Export conventions
 
-- Authoring units are meters.
+- Editor dimensions are authored in meters.
 - Default export scale is 10 game units per meter.
-- No server, API key, account, or database is required.
-- The downloaded GLB contains named meshes so materials can be replaced in-engine.
-
+- GLB uses Y-up coordinates and imports upright in Blender.
+- Components have descriptive names for engine-side material replacement.
+- Water volume and water surface remain separate meshes.

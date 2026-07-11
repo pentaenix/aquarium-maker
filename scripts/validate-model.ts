@@ -21,22 +21,48 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
   const box = new THREE.Box3().setFromObject(build.group);
   let meshes = 0;
   let invalid = 0;
+  let degenerate = 0;
   const names: string[] = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+  const cross = new THREE.Vector3();
+
   build.group.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     meshes += 1;
     names.push(object.name);
-    const position = object.geometry.getAttribute('position');
+    const geometry = object.geometry;
+    const position = geometry.getAttribute('position');
+    const normal = geometry.getAttribute('normal');
     for (let index = 0; index < position.count; index += 1) {
       if (![position.getX(index), position.getY(index), position.getZ(index)].every(Number.isFinite)) invalid += 1;
+      if (normal && ![normal.getX(index), normal.getY(index), normal.getZ(index)].every(Number.isFinite)) invalid += 1;
     }
-    const indices = object.geometry.index;
-    if (indices) {
-      for (let index = 0; index < indices.count; index += 1) if (indices.getX(index) >= position.count) invalid += 1;
+
+    const indices = geometry.index;
+    const triangleCount = indices ? Math.floor(indices.count / 3) : Math.floor(position.count / 3);
+    for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      const ia = indices ? indices.getX(triangle * 3) : triangle * 3;
+      const ib = indices ? indices.getX(triangle * 3 + 1) : triangle * 3 + 1;
+      const ic = indices ? indices.getX(triangle * 3 + 2) : triangle * 3 + 2;
+      if (ia >= position.count || ib >= position.count || ic >= position.count) {
+        invalid += 1;
+        continue;
+      }
+      a.fromBufferAttribute(position, ia);
+      b.fromBufferAttribute(position, ib);
+      c.fromBufferAttribute(position, ic);
+      ab.subVectors(b, a);
+      ac.subVectors(c, a);
+      cross.crossVectors(ab, ac);
+      if (!Number.isFinite(cross.lengthSq()) || cross.lengthSq() < 1e-16) degenerate += 1;
     }
   });
-  console.log(JSON.stringify({ label, meshes, triangles: build.triangles, vertices: build.vertices, invalid, size: box.getSize(new THREE.Vector3()).toArray(), names }, null, 2));
-  if (invalid) process.exitCode = 1;
+  console.log(JSON.stringify({ label, meshes, triangles: build.triangles, vertices: build.vertices, invalid, degenerate, size: box.getSize(new THREE.Vector3()).toArray(), names }, null, 2));
+  if (invalid || degenerate) process.exitCode = 1;
   build.dispose();
 }
 
@@ -104,3 +130,88 @@ touchL.height = 1.55;
 touchL.width = 7.4;
 touchL.depth = 5.1;
 validate('l-shape-touch-pool', touchL);
+
+const lTunnel = cloneSettings(DEFAULT_SETTINGS);
+lTunnel.footprint = 'lShape';
+lTunnel.width = 10.4;
+lTunnel.depth = 7.4;
+lTunnel.tunnelEnabled = true;
+lTunnel.tunnelAxis = 'depth';
+lTunnel.tunnelOffset = -3.0;
+lTunnel.tunnelWidth = 1.6;
+validate('l-shape-tunnel', lTunnel);
+
+const uTunnel = cloneSettings(DEFAULT_SETTINGS);
+uTunnel.footprint = 'uShape';
+uTunnel.width = 11.2;
+uTunnel.depth = 7.2;
+uTunnel.tunnelEnabled = true;
+uTunnel.tunnelAxis = 'depth';
+uTunnel.tunnelOffset = -4.0;
+uTunnel.tunnelWidth = 1.45;
+validate('u-shape-tunnel', uTunnel);
+
+const uBelowTunnel = cloneSettings(DEFAULT_SETTINGS);
+uBelowTunnel.profile = 'belowFloor';
+uBelowTunnel.footprint = 'uShape';
+uBelowTunnel.width = 11.2;
+uBelowTunnel.depth = 7.2;
+uBelowTunnel.tunnelEnabled = true;
+uBelowTunnel.tunnelAxis = 'depth';
+uBelowTunnel.tunnelOffset = 4.0;
+uBelowTunnel.tunnelWidth = 1.45;
+validate('u-shape-below-floor-tunnel', uBelowTunnel);
+
+const largeTerrain = cloneSettings(DEFAULT_SETTINGS);
+largeTerrain.width = 28;
+largeTerrain.depth = 16;
+largeTerrain.groundIrregularity = 0.24;
+largeTerrain.groundMoundSize = 3.4;
+largeTerrain.groundMoundCount = 7;
+largeTerrain.groundTerrainDetail = 3;
+validate('large-tank-deformed-ground', largeTerrain);
+
+const lMixedCorners = cloneSettings(DEFAULT_SETTINGS);
+lMixedCorners.footprint = 'lShape';
+lMixedCorners.shapeCornerModes = {
+  ...lMixedCorners.shapeCornerModes,
+  lBackLeft: 'square',
+  lBackRight: 'chamfer',
+  lOuterRight: 'rounded',
+  lInnerElbow: 'rounded',
+  lFrontRight: 'chamfer',
+  lFrontLeft: 'rounded',
+};
+lMixedCorners.shapeCornerRadii = {
+  ...lMixedCorners.shapeCornerRadii,
+  lBackRight: 0.42,
+  lOuterRight: 0.78,
+  lInnerElbow: 0.62,
+  lFrontRight: 0.3,
+  lFrontLeft: 0.65,
+};
+validate('l-shape-independent-corners', lMixedCorners);
+
+const uMixedCorners = cloneSettings(DEFAULT_SETTINGS);
+uMixedCorners.footprint = 'uShape';
+uMixedCorners.shapeCornerModes = {
+  ...uMixedCorners.shapeCornerModes,
+  uBackLeft: 'rounded',
+  uBackRight: 'square',
+  uFrontRight: 'chamfer',
+  uMouthRight: 'rounded',
+  uInnerRight: 'rounded',
+  uInnerLeft: 'chamfer',
+  uMouthLeft: 'square',
+  uFrontLeft: 'rounded',
+};
+uMixedCorners.shapeCornerRadii = {
+  ...uMixedCorners.shapeCornerRadii,
+  uBackLeft: 0.58,
+  uFrontRight: 0.34,
+  uMouthRight: 0.26,
+  uInnerRight: 0.54,
+  uInnerLeft: 0.4,
+  uFrontLeft: 0.7,
+};
+validate('u-shape-independent-corners', uMixedCorners);

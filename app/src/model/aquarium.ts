@@ -3,7 +3,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as polygonClippingModule from 'polygon-clipping';
 import type { MultiPolygon, Polygon as ClipPolygon, Ring } from 'polygon-clipping';
-import type { AquariumSettings, CornerModes, CornerRadii, TunnelAxis } from './settings';
+import type { AquariumSettings, CornerMode, CornerModes, CornerRadii, ShapeCornerKey, TunnelAxis } from './settings';
 import { createGroundTexture, createWaterTextures } from './textures';
 
 export interface AquariumBuild {
@@ -114,24 +114,95 @@ export function createFootprintLoop(
       -(corner.centerPythonY + corner.radius * Math.sin(endAngle)),
     );
 
+    if (mode === 'square') {
+      const exactCorner: Record<keyof CornerRadii, THREE.Vector2> = {
+        frontRight: new THREE.Vector2(halfWidth, halfDepth),
+        backRight: new THREE.Vector2(halfWidth, -halfDepth),
+        backLeft: new THREE.Vector2(-halfWidth, -halfDepth),
+        frontLeft: new THREE.Vector2(-halfWidth, halfDepth),
+      };
+      points.push(exactCorner[corner.key]);
+      continue;
+    }
+
+    if (mode === 'chamfer') {
+      points.push(startPoint, endPoint);
+      continue;
+    }
+
     for (let step = 0; step <= segments; step += 1) {
-      const t = step / segments;
-      if (mode === 'chamfer') {
-        points.push(startPoint.clone().lerp(endPoint, t));
-      } else {
-        const angle = THREE.MathUtils.lerp(startAngle, endAngle, t);
-        const x = corner.centerX + corner.radius * Math.cos(angle);
-        const pythonY = corner.centerPythonY + corner.radius * Math.sin(angle);
-        points.push(new THREE.Vector2(x, -pythonY));
-      }
+      const angle = THREE.MathUtils.lerp(startAngle, endAngle, step / segments);
+      const x = corner.centerX + corner.radius * Math.cos(angle);
+      const pythonY = corner.centerPythonY + corner.radius * Math.sin(angle);
+      points.push(new THREE.Vector2(x, -pythonY));
     }
   }
   return points;
 }
 
 
-function loopToClipPolygon(loop: THREE.Vector2[]): ClipPolygon {
-  return [closeRing(loop)];
+function roundedOrthogonalLoop(
+  vertices: THREE.Vector2[],
+  cornerKeys: ShapeCornerKey[],
+  settings: AquariumSettings,
+  offset: number,
+): THREE.Vector2[] {
+  if (vertices.length !== cornerKeys.length) throw new Error('Corner keys must match polygon vertices.');
+  const result: THREE.Vector2[] = [];
+  const segments = Math.max(1, Math.round(settings.curveSegments));
+
+  for (let index = 0; index < vertices.length; index += 1) {
+    const previous = vertices[(index - 1 + vertices.length) % vertices.length]!;
+    const current = vertices[index]!;
+    const next = vertices[(index + 1) % vertices.length]!;
+    const toPrevious = previous.clone().sub(current);
+    const toNext = next.clone().sub(current);
+    const previousLength = toPrevious.length();
+    const nextLength = toNext.length();
+    if (previousLength < EPSILON || nextLength < EPSILON) continue;
+    toPrevious.divideScalar(previousLength);
+    toNext.divideScalar(nextLength);
+
+    const incoming = current.clone().sub(previous);
+    const outgoing = next.clone().sub(current);
+    const cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
+    const convex = cross > 0;
+    const key = cornerKeys[index]!;
+    const mode: CornerMode = settings.shapeCornerModes[key];
+    const offsetRadius = settings.shapeCornerRadii[key] + (convex ? offset : -offset);
+    const radius = mode === 'square'
+      ? 0
+      : THREE.MathUtils.clamp(offsetRadius, 0.002, Math.min(previousLength, nextLength) * 0.45);
+
+    if (radius <= 0.0025) {
+      result.push(current.clone());
+      continue;
+    }
+
+    const start = current.clone().addScaledVector(toPrevious, radius);
+    const finish = current.clone().addScaledVector(toNext, radius);
+    if (mode === 'chamfer') {
+      result.push(start, finish);
+      continue;
+    }
+
+    const center = current.clone().addScaledVector(toPrevious, radius).addScaledVector(toNext, radius);
+    const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+    const finishAngle = Math.atan2(finish.y - center.y, finish.x - center.x);
+    let delta = finishAngle - startAngle;
+    if (convex) {
+      while (delta <= 0) delta += Math.PI * 2;
+      if (delta > Math.PI) delta -= Math.PI * 2;
+    } else {
+      while (delta >= 0) delta -= Math.PI * 2;
+      if (delta < -Math.PI) delta += Math.PI * 2;
+    }
+    for (let step = 0; step <= segments; step += 1) {
+      const angle = startAngle + delta * (step / segments);
+      result.push(new THREE.Vector2(center.x + Math.cos(angle) * radius, center.y + Math.sin(angle) * radius));
+    }
+  }
+  return result;
 }
 
 function makeLShapeLoop(settings: AquariumSettings, offset: number): THREE.Vector2[] {
@@ -141,9 +212,9 @@ function makeLShapeLoop(settings: AquariumSettings, offset: number): THREE.Vecto
   const right = width * 0.5;
   const back = -depth * 0.5;
   const front = depth * 0.5;
-  const arm = THREE.MathUtils.clamp(settings.lArmWidth + offset, 0.35, width - 0.35);
-  const rear = THREE.MathUtils.clamp(settings.lRearDepth + offset, 0.35, depth - 0.35);
-  return [
+  const arm = THREE.MathUtils.clamp(settings.lArmWidth + offset * 2, 0.35, width - 0.35);
+  const rear = THREE.MathUtils.clamp(settings.lRearDepth + offset * 2, 0.35, depth - 0.35);
+  const vertices = [
     new THREE.Vector2(left, back),
     new THREE.Vector2(right, back),
     new THREE.Vector2(right, back + rear),
@@ -151,6 +222,10 @@ function makeLShapeLoop(settings: AquariumSettings, offset: number): THREE.Vecto
     new THREE.Vector2(left + arm, front),
     new THREE.Vector2(left, front),
   ];
+  const keys: ShapeCornerKey[] = [
+    'lBackLeft', 'lBackRight', 'lOuterRight', 'lInnerElbow', 'lFrontRight', 'lFrontLeft',
+  ];
+  return roundedOrthogonalLoop(vertices, keys, settings, offset);
 }
 
 function makeUShapeLoop(settings: AquariumSettings, offset: number): THREE.Vector2[] {
@@ -160,8 +235,8 @@ function makeUShapeLoop(settings: AquariumSettings, offset: number): THREE.Vecto
   const right = width * 0.5;
   const back = -depth * 0.5;
   const front = depth * 0.5;
-  let leftArm = settings.uLeftArmWidth + offset;
-  let rightArm = settings.uRightArmWidth + offset;
+  let leftArm = settings.uLeftArmWidth + offset * 2;
+  let rightArm = settings.uRightArmWidth + offset * 2;
   const maxArmTotal = width - 0.45;
   if (leftArm + rightArm > maxArmTotal) {
     const scale = maxArmTotal / Math.max(leftArm + rightArm, EPSILON);
@@ -170,8 +245,8 @@ function makeUShapeLoop(settings: AquariumSettings, offset: number): THREE.Vecto
   }
   leftArm = THREE.MathUtils.clamp(leftArm, 0.25, width * 0.48);
   rightArm = THREE.MathUtils.clamp(rightArm, 0.25, width * 0.48);
-  const bridge = THREE.MathUtils.clamp(settings.uBackDepth + offset, 0.3, depth - 0.3);
-  return [
+  const bridge = THREE.MathUtils.clamp(settings.uBackDepth + offset * 2, 0.3, depth - 0.3);
+  const vertices = [
     new THREE.Vector2(left, back),
     new THREE.Vector2(right, back),
     new THREE.Vector2(right, front),
@@ -181,6 +256,11 @@ function makeUShapeLoop(settings: AquariumSettings, offset: number): THREE.Vecto
     new THREE.Vector2(left + leftArm, front),
     new THREE.Vector2(left, front),
   ];
+  const keys: ShapeCornerKey[] = [
+    'uBackLeft', 'uBackRight', 'uFrontRight', 'uMouthRight',
+    'uInnerRight', 'uInnerLeft', 'uMouthLeft', 'uFrontLeft',
+  ];
+  return roundedOrthogonalLoop(vertices, keys, settings, offset);
 }
 
 export function createFootprintShapeLoop(settings: AquariumSettings, offset = 0): THREE.Vector2[] {
@@ -194,54 +274,6 @@ export function createFootprintShapeLoop(settings: AquariumSettings, offset = 0)
     settings.cornerModes,
     settings.curveSegments,
   );
-}
-
-function makeSurfaceFromPolygon(loop: THREE.Vector2[], y: number, includeUVs = true): THREE.BufferGeometry {
-  const polygon = [loopToClipPolygon(loop)] as MultiPolygon;
-  const positions: number[] = [];
-  const indices: number[] = [];
-  appendMultiPolygonCap(polygon, y, true, positions, indices);
-  const uvs = includeUVs ? [] as number[] : undefined;
-  if (uvs) {
-    const minX = Math.min(...loop.map((point) => point.x));
-    const maxX = Math.max(...loop.map((point) => point.x));
-    const minZ = Math.min(...loop.map((point) => point.y));
-    const maxZ = Math.max(...loop.map((point) => point.y));
-    for (let index = 0; index < positions.length; index += 3) {
-      const x = positions[index]!;
-      const z = positions[index + 2]!;
-      uvs.push((x - minX) / Math.max(maxX - minX, EPSILON), (z - minZ) / Math.max(maxZ - minZ, EPSILON));
-    }
-  }
-  const normals: number[] = [];
-  for (let index = 0; index < positions.length / 3; index += 1) normals.push(0, 1, 0);
-  return finishGeometry(positions, indices, uvs, normals);
-}
-
-function makeSolidFromLoop(loop: THREE.Vector2[], yBottom: number, yTop: number, planarUVs = false): THREE.BufferGeometry {
-  return makePolygonPrism([loopToClipPolygon(loop)] as MultiPolygon, yBottom, yTop, planarUVs);
-}
-
-function makeWaterFromLoop(loop: THREE.Vector2[], yBottom: number, yTop: number): THREE.BufferGeometry {
-  // General-profile water keeps a hidden cap and uses a separate visible surface.
-  return makePolygonPrism([loopToClipPolygon(loop)] as MultiPolygon, yBottom, yTop, false);
-}
-
-function planarUV(x: number, z: number, loop: THREE.Vector2[]): [number, number] {
-  let minX = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let minZ = Number.POSITIVE_INFINITY;
-  let maxZ = Number.NEGATIVE_INFINITY;
-  for (const point of loop) {
-    minX = Math.min(minX, point.x);
-    maxX = Math.max(maxX, point.x);
-    minZ = Math.min(minZ, point.y);
-    maxZ = Math.max(maxZ, point.y);
-  }
-  return [
-    (x - minX) / Math.max(maxX - minX, 1e-9),
-    (z - minZ) / Math.max(maxZ - minZ, 1e-9),
-  ];
 }
 
 function finishGeometry(
@@ -259,164 +291,6 @@ function finishGeometry(
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
   return geometry;
-}
-
-function pushVertex(
-  positions: number[],
-  point: THREE.Vector2,
-  y: number,
-  uvs?: number[],
-  uvLoop?: THREE.Vector2[],
-): number {
-  const index = positions.length / 3;
-  positions.push(point.x, y, point.y);
-  if (uvs && uvLoop) {
-    const [u, v] = planarUV(point.x, point.y, uvLoop);
-    uvs.push(u, v);
-  }
-  return index;
-}
-
-function makeSolidPrism(
-  loop: THREE.Vector2[],
-  yBottom: number,
-  yTop: number,
-  includePlanarUVs = false,
-): THREE.BufferGeometry {
-  const count = loop.length;
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const uvs = includePlanarUVs ? [] as number[] : undefined;
-
-  const sideBottom = positions.length / 3;
-  for (const point of loop) pushVertex(positions, point, yBottom, uvs, loop);
-  const sideTop = positions.length / 3;
-  for (const point of loop) pushVertex(positions, point, yTop, uvs, loop);
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(
-      sideBottom + index, sideBottom + next, sideTop + next,
-      sideBottom + index, sideTop + next, sideTop + index,
-    );
-  }
-
-  const bottomRing = positions.length / 3;
-  for (const point of loop) pushVertex(positions, point, yBottom, uvs, loop);
-  const bottomCenter = positions.length / 3;
-  positions.push(0, yBottom, 0);
-  if (uvs) uvs.push(0.5, 0.5);
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(bottomCenter, bottomRing + next, bottomRing + index);
-  }
-
-  const topRing = positions.length / 3;
-  for (const point of loop) pushVertex(positions, point, yTop, uvs, loop);
-  const topCenter = positions.length / 3;
-  positions.push(0, yTop, 0);
-  if (uvs) uvs.push(0.5, 0.5);
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(topCenter, topRing + index, topRing + next);
-  }
-  return finishGeometry(positions, indices, uvs);
-}
-
-function makeRingPrism(
-  outerLoop: THREE.Vector2[],
-  innerLoop: THREE.Vector2[],
-  yBottom: number,
-  yTop: number,
-): THREE.BufferGeometry {
-  if (outerLoop.length !== innerLoop.length) throw new Error('Ring loops must have matching topology.');
-  const count = outerLoop.length;
-  const positions: number[] = [];
-  const indices: number[] = [];
-
-  const outerBottom = positions.length / 3;
-  for (const point of outerLoop) pushVertex(positions, point, yBottom);
-  const outerTop = positions.length / 3;
-  for (const point of outerLoop) pushVertex(positions, point, yTop);
-  const innerBottom = positions.length / 3;
-  for (const point of innerLoop) pushVertex(positions, point, yBottom);
-  const innerTop = positions.length / 3;
-  for (const point of innerLoop) pushVertex(positions, point, yTop);
-
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(
-      outerBottom + index, outerBottom + next, outerTop + next,
-      outerBottom + index, outerTop + next, outerTop + index,
-      innerBottom + index, innerTop + next, innerBottom + next,
-      innerBottom + index, innerTop + index, innerTop + next,
-    );
-  }
-
-  const bottomOuter = positions.length / 3;
-  for (const point of outerLoop) pushVertex(positions, point, yBottom);
-  const bottomInner = positions.length / 3;
-  for (const point of innerLoop) pushVertex(positions, point, yBottom);
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(
-      bottomOuter + index, bottomInner + next, bottomOuter + next,
-      bottomOuter + index, bottomInner + index, bottomInner + next,
-    );
-  }
-
-  const topOuter = positions.length / 3;
-  for (const point of outerLoop) pushVertex(positions, point, yTop);
-  const topInner = positions.length / 3;
-  for (const point of innerLoop) pushVertex(positions, point, yTop);
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(
-      topOuter + index, topOuter + next, topInner + next,
-      topOuter + index, topInner + next, topInner + index,
-    );
-  }
-  return finishGeometry(positions, indices);
-}
-
-function makeWaterVolume(loop: THREE.Vector2[], yBottom: number, yTop: number): THREE.BufferGeometry {
-  const count = loop.length;
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const bottom = positions.length / 3;
-  for (const point of loop) pushVertex(positions, point, yBottom);
-  const top = positions.length / 3;
-  for (const point of loop) pushVertex(positions, point, yTop);
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(bottom + index, bottom + next, top + next, bottom + index, top + next, top + index);
-  }
-  const capRing = positions.length / 3;
-  for (const point of loop) pushVertex(positions, point, yBottom);
-  const center = positions.length / 3;
-  positions.push(0, yBottom, 0);
-  for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count;
-    indices.push(center, capRing + next, capRing + index);
-  }
-  return finishGeometry(positions, indices);
-}
-
-function makeFlatWaterSurface(loop: THREE.Vector2[], y: number): THREE.BufferGeometry {
-  const count = loop.length;
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const uvs: number[] = [];
-  const normals: number[] = [];
-  for (const point of loop) {
-    pushVertex(positions, point, y, uvs, loop);
-    normals.push(0, 1, 0);
-  }
-  const center = positions.length / 3;
-  positions.push(0, y, 0);
-  uvs.push(0.5, 0.5);
-  normals.push(0, 1, 0);
-  for (let index = 0; index < count; index += 1) indices.push(center, index, (index + 1) % count);
-  return finishGeometry(positions, indices, uvs, normals);
 }
 
 function closeRing(loop: THREE.Vector2[]): Ring {
@@ -498,12 +372,21 @@ function appendMultiPolygonCap(
   }
 }
 
+interface PolygonPrismOptions {
+  includeBottom?: boolean;
+  includeTop?: boolean;
+  skipSide?: (a: [number, number], b: [number, number]) => boolean;
+}
+
 function makePolygonPrism(
   multi: MultiPolygon,
   yBottom: number,
   yTop: number,
   planarUVs = false,
+  options: PolygonPrismOptions = {},
 ): THREE.BufferGeometry {
+  const includeBottom = options.includeBottom ?? true;
+  const includeTop = options.includeTop ?? true;
   const positions: number[] = [];
   const indices: number[] = [];
   const uvs = planarUVs ? [] as number[] : undefined;
@@ -536,11 +419,11 @@ function makePolygonPrism(
       const upwardAsWritten = area < 0;
       const [ia, ib, ic] = triangle;
       if (upwardAsWritten) {
-        indices.push(topBase + ia!, topBase + ib!, topBase + ic!);
-        indices.push(bottomBase + ia!, bottomBase + ic!, bottomBase + ib!);
+        if (includeTop) indices.push(topBase + ia!, topBase + ib!, topBase + ic!);
+        if (includeBottom) indices.push(bottomBase + ia!, bottomBase + ic!, bottomBase + ib!);
       } else {
-        indices.push(topBase + ia!, topBase + ic!, topBase + ib!);
-        indices.push(bottomBase + ia!, bottomBase + ib!, bottomBase + ic!);
+        if (includeTop) indices.push(topBase + ia!, topBase + ic!, topBase + ib!);
+        if (includeBottom) indices.push(bottomBase + ia!, bottomBase + ib!, bottomBase + ic!);
       }
     }
 
@@ -549,6 +432,7 @@ function makePolygonPrism(
       for (let i = 0; i < ring.length; i += 1) {
         const a = ring[i]!;
         const b = ring[(i + 1) % ring.length]!;
+        if (options.skipSide?.(a, b)) continue;
         const edgeX = b[0] - a[0];
         const edgeZ = b[1] - a[1];
         const enclosedNormal = area > 0
@@ -576,75 +460,188 @@ function makePolygonPrism(
   return finishGeometry(positions, indices, uvs);
 }
 
-function isTunnelEndStraightSegment(loop: THREE.Vector2[], index: number, axis: TunnelAxis): boolean {
-  const a = loop[index]!;
-  const b = loop[(index + 1) % loop.length]!;
-  if (axis === 'depth') {
-    if (Math.abs(a.y - b.y) > 1e-7) return false;
-    const maxAbsZ = Math.max(...loop.map((point) => Math.abs(point.y)));
-    return Math.abs(Math.abs((a.y + b.y) * 0.5) - maxAbsZ) < 1e-5;
-  }
-  if (Math.abs(a.x - b.x) > 1e-7) return false;
-  const maxAbsX = Math.max(...loop.map((point) => Math.abs(point.x)));
-  return Math.abs(Math.abs((a.x + b.x) * 0.5) - maxAbsX) < 1e-5;
-}
-
-function makeSideCornerGlassShell(
-  outer: THREE.Vector2[],
-  inner: THREE.Vector2[],
-  yBottom: number,
-  yTop: number,
-  axis: TunnelAxis,
-): THREE.BufferGeometry {
+function makeSurfaceFromMultiPolygon(multi: MultiPolygon, y: number): THREE.BufferGeometry {
   const positions: number[] = [];
   const indices: number[] = [];
-  const omitted: number[] = [];
-  const addQuad = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, normal: THREE.Vector3) =>
-    appendOrientedQuad(positions, indices, [a, b, c, d], normal);
-
-  for (let i = 0; i < outer.length; i += 1) {
-    const next = (i + 1) % outer.length;
-    if (isTunnelEndStraightSegment(outer, i, axis)) {
-      omitted.push(i);
-      continue;
-    }
-    const oa = outer[i]!;
-    const ob = outer[next]!;
-    const ia = inner[i]!;
-    const ib = inner[next]!;
-    const edge = ob.clone().sub(oa);
-    const outerNormal = new THREE.Vector3(edge.y, 0, -edge.x).normalize();
-    const innerNormal = outerNormal.clone().negate();
-    addQuad(
-      new THREE.Vector3(oa.x, yBottom, oa.y), new THREE.Vector3(ob.x, yBottom, ob.y),
-      new THREE.Vector3(ob.x, yTop, ob.y), new THREE.Vector3(oa.x, yTop, oa.y), outerNormal,
-    );
-    addQuad(
-      new THREE.Vector3(ia.x, yBottom, ia.y), new THREE.Vector3(ia.x, yTop, ia.y),
-      new THREE.Vector3(ib.x, yTop, ib.y), new THREE.Vector3(ib.x, yBottom, ib.y), innerNormal,
-    );
-    addQuad(
-      new THREE.Vector3(oa.x, yTop, oa.y), new THREE.Vector3(ob.x, yTop, ob.y),
-      new THREE.Vector3(ib.x, yTop, ib.y), new THREE.Vector3(ia.x, yTop, ia.y), new THREE.Vector3(0, 1, 0),
-    );
-    addQuad(
-      new THREE.Vector3(oa.x, yBottom, oa.y), new THREE.Vector3(ia.x, yBottom, ia.y),
-      new THREE.Vector3(ib.x, yBottom, ib.y), new THREE.Vector3(ob.x, yBottom, ob.y), new THREE.Vector3(0, -1, 0),
-    );
+  appendMultiPolygonCap(multi, y, true, positions, indices);
+  const allPoints = multi.flat(2);
+  const minX = Math.min(...allPoints.map((point) => point[0]));
+  const maxX = Math.max(...allPoints.map((point) => point[0]));
+  const minZ = Math.min(...allPoints.map((point) => point[1]));
+  const maxZ = Math.max(...allPoints.map((point) => point[1]));
+  const uvs: number[] = [];
+  for (let index = 0; index < positions.length; index += 3) {
+    const x = positions[index]!;
+    const z = positions[index + 2]!;
+    uvs.push((x - minX) / Math.max(maxX - minX, EPSILON), (z - minZ) / Math.max(maxZ - minZ, EPSILON));
   }
+  return finishGeometry(positions, indices, uvs);
+}
 
-  for (const i of omitted) {
-    for (const pointIndex of [i, (i + 1) % outer.length]) {
-      const o = outer[pointIndex]!;
-      const inside = inner[pointIndex]!;
-      const normal = new THREE.Vector3(o.x - inside.x, 0, o.y - inside.y).normalize();
-      addQuad(
-        new THREE.Vector3(o.x, yBottom, o.y), new THREE.Vector3(o.x, yTop, o.y),
-        new THREE.Vector3(inside.x, yTop, inside.y), new THREE.Vector3(inside.x, yBottom, inside.y), normal,
+function subdivideIndexedGeometry(source: THREE.BufferGeometry, levels: number): THREE.BufferGeometry {
+  let geometry = source;
+  for (let level = 0; level < levels; level += 1) {
+    const positionAttribute = geometry.getAttribute('position');
+    const uvAttribute = geometry.getAttribute('uv');
+    const indexAttribute = geometry.index;
+    if (!indexAttribute) break;
+    const positions: number[] = Array.from(positionAttribute.array as ArrayLike<number>);
+    const uvs: number[] | undefined = uvAttribute ? Array.from(uvAttribute.array as ArrayLike<number>) : undefined;
+    const nextIndices: number[] = [];
+    const midpointCache = new Map<string, number>();
+    const midpoint = (a: number, b: number): number => {
+      const low = Math.min(a, b);
+      const high = Math.max(a, b);
+      const key = `${low}:${high}`;
+      const cached = midpointCache.get(key);
+      if (cached !== undefined) return cached;
+      const index = positions.length / 3;
+      positions.push(
+        (positions[a * 3]! + positions[b * 3]!) * 0.5,
+        (positions[a * 3 + 1]! + positions[b * 3 + 1]!) * 0.5,
+        (positions[a * 3 + 2]! + positions[b * 3 + 2]!) * 0.5,
       );
+      if (uvs) {
+        uvs.push(
+          (uvs[a * 2]! + uvs[b * 2]!) * 0.5,
+          (uvs[a * 2 + 1]! + uvs[b * 2 + 1]!) * 0.5,
+        );
+      }
+      midpointCache.set(key, index);
+      return index;
+    };
+    for (let triangle = 0; triangle < indexAttribute.count; triangle += 3) {
+      const a = indexAttribute.getX(triangle);
+      const b = indexAttribute.getX(triangle + 1);
+      const c = indexAttribute.getX(triangle + 2);
+      const ab = midpoint(a, b);
+      const bc = midpoint(b, c);
+      const ca = midpoint(c, a);
+      nextIndices.push(a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca);
+    }
+    const next = finishGeometry(positions, nextIndices, uvs);
+    if (geometry !== source) geometry.dispose();
+    geometry = next;
+  }
+  if (geometry !== source) source.dispose();
+  return geometry;
+}
+
+function pointInRing(x: number, z: number, ring: Ring): boolean {
+  let inside = false;
+  const clean = cleanRing(ring);
+  for (let i = 0, j = clean.length - 1; i < clean.length; j = i, i += 1) {
+    const a = clean[i]!;
+    const b = clean[j]!;
+    const intersects = ((a[1] > z) !== (b[1] > z))
+      && x < ((b[0] - a[0]) * (z - a[1])) / (b[1] - a[1]) + a[0];
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInMultiPolygon(x: number, z: number, multi: MultiPolygon): boolean {
+  for (const polygon of multi) {
+    if (!pointInRing(x, z, polygon[0]!)) continue;
+    let inHole = false;
+    for (const hole of polygon.slice(1)) if (pointInRing(x, z, hole)) inHole = true;
+    if (!inHole) return true;
+  }
+  return false;
+}
+
+function distanceToSegment(x: number, z: number, a: [number, number], b: [number, number]): number {
+  const dx = b[0] - a[0];
+  const dz = b[1] - a[1];
+  const lengthSquared = dx * dx + dz * dz;
+  const t = lengthSquared < EPSILON ? 0 : THREE.MathUtils.clamp(((x - a[0]) * dx + (z - a[1]) * dz) / lengthSquared, 0, 1);
+  return Math.hypot(x - (a[0] + dx * t), z - (a[1] + dz * t));
+}
+
+function distanceToMultiBoundary(x: number, z: number, multi: MultiPolygon): number {
+  let distance = Number.POSITIVE_INFINITY;
+  for (const polygon of multi) {
+    for (const ring of polygon) {
+      const clean = cleanRing(ring);
+      for (let index = 0; index < clean.length; index += 1) {
+        distance = Math.min(distance, distanceToSegment(x, z, clean[index]!, clean[(index + 1) % clean.length]!));
+      }
     }
   }
-  return finishGeometry(positions, indices);
+  return distance;
+}
+
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state += 0x6D2B79F5;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeTerrainSurface(multi: MultiPolygon, y: number, settings: AquariumSettings): THREE.BufferGeometry {
+  const autoDetail = Math.max(settings.width, settings.depth) > 16 ? 1 : 0;
+  let geometry = makeSurfaceFromMultiPolygon(multi, y);
+  geometry = subdivideIndexedGeometry(geometry, Math.min(3, settings.groundTerrainDetail + autoDetail));
+  const position = geometry.getAttribute('position') as THREE.BufferAttribute;
+  if (settings.groundIrregularity <= 0.0005) {
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  const allPoints = multi.flat(2);
+  const minX = Math.min(...allPoints.map((point) => point[0]));
+  const maxX = Math.max(...allPoints.map((point) => point[0]));
+  const minZ = Math.min(...allPoints.map((point) => point[1]));
+  const maxZ = Math.max(...allPoints.map((point) => point[1]));
+  const random = seededRandom(settings.sandSeed + 419);
+  const mounds: Array<{ x: number; z: number; sigma: number; weight: number }> = [];
+  let attempts = 0;
+  while (mounds.length < settings.groundMoundCount && attempts < settings.groundMoundCount * 30) {
+    attempts += 1;
+    const x = THREE.MathUtils.lerp(minX, maxX, random());
+    const z = THREE.MathUtils.lerp(minZ, maxZ, random());
+    if (!pointInMultiPolygon(x, z, multi)) continue;
+    mounds.push({
+      x,
+      z,
+      sigma: settings.groundMoundSize * THREE.MathUtils.lerp(0.62, 1.25, random()),
+      weight: THREE.MathUtils.lerp(0.55, 1, random()),
+    });
+  }
+
+  const rawHeights: number[] = [];
+  let maximum = 0;
+  for (let index = 0; index < position.count; index += 1) {
+    const x = position.getX(index);
+    const z = position.getZ(index);
+    let height = 0;
+    for (const mound of mounds) {
+      const distanceSquared = (x - mound.x) ** 2 + (z - mound.z) ** 2;
+      height += Math.exp(-distanceSquared / Math.max(2 * mound.sigma * mound.sigma, EPSILON)) * mound.weight;
+    }
+    height += 0.08 * (Math.sin(x * 1.37 + z * 0.41 + settings.sandSeed) + 1) * 0.5;
+    rawHeights.push(height);
+    maximum = Math.max(maximum, height);
+  }
+
+  const edgeFadeDistance = Math.max(0.18, settings.groundMoundSize * 0.35);
+  for (let index = 0; index < position.count; index += 1) {
+    const x = position.getX(index);
+    const z = position.getZ(index);
+    const edgeDistance = distanceToMultiBoundary(x, z, multi);
+    const fade = THREE.MathUtils.smoothstep(edgeDistance, 0, edgeFadeDistance);
+    const normalized = maximum > EPSILON ? rawHeights[index]! / maximum : 0;
+    position.setY(index, y + settings.groundIrregularity * normalized * fade);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
 }
 
 interface ArchProfile {
@@ -697,10 +694,179 @@ function orientTunnelGeometry(geometry: THREE.BufferGeometry, axis: TunnelAxis, 
   return geometry;
 }
 
-function tunnelCorridorPolygon(axis: TunnelAxis, offset: number, halfWidth: number, deep: number): ClipPolygon {
-  return axis === 'depth'
-    ? rectanglePolygon(offset - halfWidth, -deep, offset + halfWidth, deep)
-    : rectanglePolygon(-deep, offset - halfWidth, deep, offset + halfWidth);
+interface TunnelSpan {
+  exit: number;
+  entrance: number;
+}
+
+function pointInVectorLoop(point: THREE.Vector2, loop: THREE.Vector2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = loop.length - 1; i < loop.length; j = i, i += 1) {
+    const a = loop[i]!;
+    const b = loop[j]!;
+    const crosses = (a.y > point.y) !== (b.y > point.y);
+    if (!crosses) continue;
+    const x = ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x;
+    if (point.x < x) inside = !inside;
+  }
+  return inside;
+}
+
+function lineIntervalsAtLocalX(loop: THREE.Vector2[], x: number): TunnelSpan[] {
+  const intersections: number[] = [];
+  for (let index = 0; index < loop.length; index += 1) {
+    const a = loop[index]!;
+    const b = loop[(index + 1) % loop.length]!;
+    if ((a.x <= x && b.x > x) || (b.x <= x && a.x > x)) {
+      const t = (x - a.x) / (b.x - a.x);
+      intersections.push(THREE.MathUtils.lerp(a.y, b.y, t));
+    }
+  }
+  intersections.sort((a, b) => a - b);
+  const unique = intersections.filter((value, index) => index === 0 || Math.abs(value - intersections[index - 1]!) > 1e-5);
+  const intervals: TunnelSpan[] = [];
+  for (let index = 0; index < unique.length - 1; index += 1) {
+    const exit = unique[index]!;
+    const entrance = unique[index + 1]!;
+    if (pointInVectorLoop(new THREE.Vector2(x, (exit + entrance) * 0.5), loop)) intervals.push({ exit, entrance });
+  }
+  return intervals;
+}
+
+function intersectSpan(a: TunnelSpan, b: TunnelSpan): TunnelSpan | null {
+  const exit = Math.max(a.exit, b.exit);
+  const entrance = Math.min(a.entrance, b.entrance);
+  return entrance - exit > 0.05 ? { exit, entrance } : null;
+}
+
+function selectTunnelSpan(localLoop: THREE.Vector2[], halfWidth: number): TunnelSpan {
+  const centerIntervals = lineIntervalsAtLocalX(localLoop, 0);
+  const leftIntervals = lineIntervalsAtLocalX(localLoop, -halfWidth);
+  const rightIntervals = lineIntervalsAtLocalX(localLoop, halfWidth);
+  const candidates: TunnelSpan[] = [];
+  for (const center of centerIntervals) {
+    for (const left of leftIntervals) {
+      const centerLeft = intersectSpan(center, left);
+      if (!centerLeft) continue;
+      for (const right of rightIntervals) {
+        const common = intersectSpan(centerLeft, right);
+        if (common) candidates.push(common);
+      }
+    }
+  }
+  const fallback = centerIntervals.slice();
+  const selected = [...candidates, ...fallback].sort((a, b) => (b.entrance - b.exit) - (a.entrance - a.exit))[0];
+  if (!selected || selected.entrance - selected.exit < 0.35) {
+    throw new Error('Move or narrow the tunnel so it passes through a continuous arm of the tank.');
+  }
+  return selected;
+}
+
+function localCorridorPolygon(axis: TunnelAxis, offset: number, halfWidth: number, span: TunnelSpan): ClipPolygon {
+  if (axis === 'depth') {
+    return rectanglePolygon(offset - halfWidth, span.exit, offset + halfWidth, span.entrance);
+  }
+  return rectanglePolygon(-span.entrance, offset - halfWidth, -span.exit, offset + halfWidth);
+}
+
+function isCorridorBoundaryEdge(
+  a: [number, number],
+  b: [number, number],
+  axis: TunnelAxis,
+  offset: number,
+  halfWidth: number,
+  span: TunnelSpan,
+): boolean {
+  const localA = toTunnelLocalPoint(new THREE.Vector2(a[0], a[1]), axis, offset);
+  const localB = toTunnelLocalPoint(new THREE.Vector2(b[0], b[1]), axis, offset);
+  const onSide = (
+    Math.abs(Math.abs(localA.x) - halfWidth) < 1e-4
+    && Math.abs(Math.abs(localB.x) - halfWidth) < 1e-4
+    && Math.min(localA.y, localB.y) >= span.exit - 1e-4
+    && Math.max(localA.y, localB.y) <= span.entrance + 1e-4
+  );
+  const onEnd = (
+    (Math.abs(localA.y - span.exit) < 1e-4 && Math.abs(localB.y - span.exit) < 1e-4)
+    || (Math.abs(localA.y - span.entrance) < 1e-4 && Math.abs(localB.y - span.entrance) < 1e-4)
+  ) && Math.max(Math.abs(localA.x), Math.abs(localB.x)) <= halfWidth + 1e-4;
+  return onSide || onEnd;
+}
+
+function containingInterval(intervals: TunnelSpan[], coordinate: number): TunnelSpan {
+  return intervals.find((interval) => coordinate >= interval.exit - 1e-5 && coordinate <= interval.entrance + 1e-5)
+    ?? intervals.sort((a, b) => (b.entrance - b.exit) - (a.entrance - a.exit))[0]
+    ?? { exit: -1, entrance: 1 };
+}
+
+function makeGenericWaterVolumeWithTunnel(
+  localWaterLoop: THREE.Vector2[],
+  yBottom: number,
+  yTop: number,
+  voidProfile: THREE.Vector2[],
+  voidRoof: THREE.Vector2[],
+  halfWidth: number,
+  span: TunnelSpan,
+): THREE.BufferGeometry {
+  const cutRegion = difference(loopPolygon(localWaterLoop), rectanglePolygon(-halfWidth, span.exit, halfWidth, span.entrance));
+  const geometry = makePolygonPrism(
+    cutRegion,
+    yBottom,
+    yTop,
+    false,
+    {
+      includeTop: false,
+      includeBottom: true,
+      skipSide: (a, b) => isCorridorBoundaryEdge(a, b, 'depth', 0, halfWidth, span),
+    },
+  );
+  const positions = Array.from((geometry.getAttribute('position') as THREE.BufferAttribute).array as ArrayLike<number>);
+  const indices = geometry.index ? Array.from(geometry.index.array as ArrayLike<number>) : [];
+  geometry.dispose();
+
+  for (let index = 0; index < voidProfile.length - 1; index += 1) {
+    const a = voidProfile[index]!;
+    const b = voidProfile[index + 1]!;
+    const tangent = b.clone().sub(a);
+    const inward = new THREE.Vector3(tangent.y, -tangent.x, 0).normalize();
+    appendOrientedQuad(positions, indices, [
+      new THREE.Vector3(a.x, a.y, span.exit), new THREE.Vector3(a.x, a.y, span.entrance),
+      new THREE.Vector3(b.x, b.y, span.entrance), new THREE.Vector3(b.x, b.y, span.exit),
+    ], inward);
+  }
+
+  const addEnd = (s: number, outward: number) => {
+    const sampleS = s + (outward > 0 ? -0.002 : 0.002);
+    const cross = containingInterval(lineIntervalsAtLocalX(
+      localWaterLoop.map((point) => new THREE.Vector2(point.y, point.x)),
+      sampleS,
+    ), 0);
+    const xMin = cross.exit;
+    const xMax = cross.entrance;
+    const normal = new THREE.Vector3(0, 0, outward);
+    if (-halfWidth > xMin + EPSILON) {
+      appendOrientedQuad(positions, indices, [
+        new THREE.Vector3(xMin, yBottom, s), new THREE.Vector3(-halfWidth, yBottom, s),
+        new THREE.Vector3(-halfWidth, yTop, s), new THREE.Vector3(xMin, yTop, s),
+      ], normal);
+    }
+    if (xMax > halfWidth + EPSILON) {
+      appendOrientedQuad(positions, indices, [
+        new THREE.Vector3(halfWidth, yBottom, s), new THREE.Vector3(xMax, yBottom, s),
+        new THREE.Vector3(xMax, yTop, s), new THREE.Vector3(halfWidth, yTop, s),
+      ], normal);
+    }
+    for (let index = 0; index < voidRoof.length - 1; index += 1) {
+      const a = voidRoof[index]!;
+      const b = voidRoof[index + 1]!;
+      appendOrientedQuad(positions, indices, [
+        new THREE.Vector3(a.x, a.y, s), new THREE.Vector3(b.x, b.y, s),
+        new THREE.Vector3(b.x, yTop, s), new THREE.Vector3(a.x, yTop, s),
+      ], normal);
+    }
+  };
+  addEnd(span.entrance, 1);
+  addEnd(span.exit, -1);
+  return finishGeometry(positions, indices);
 }
 
 function makeProfileShell(
@@ -837,82 +1003,6 @@ function makeEndWallWithPortal(
   return merged;
 }
 
-function makeWaterVolumeWithTunnel(
-  waterLoop: THREE.Vector2[],
-  yBottom: number,
-  yTop: number,
-  voidProfile: THREE.Vector2[],
-  voidRoof: THREE.Vector2[],
-): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const minZ = Math.min(...waterLoop.map((point) => point.y));
-  const maxZ = Math.max(...waterLoop.map((point) => point.y));
-
-  for (let i = 0; i < waterLoop.length; i += 1) {
-    const next = (i + 1) % waterLoop.length;
-    if (isTunnelEndStraightSegment(waterLoop, i, 'depth')) continue;
-    const a = waterLoop[i]!;
-    const b = waterLoop[next]!;
-    const edge = b.clone().sub(a);
-    const outward = new THREE.Vector3(edge.y, 0, -edge.x).normalize();
-    appendOrientedQuad(positions, indices, [
-      new THREE.Vector3(a.x, yBottom, a.y), new THREE.Vector3(b.x, yBottom, b.y),
-      new THREE.Vector3(b.x, yTop, b.y), new THREE.Vector3(a.x, yTop, a.y),
-    ], outward);
-  }
-
-  const voidHalf = Math.max(Math.abs(voidProfile[0]!.x), Math.abs(voidProfile[voidProfile.length - 1]!.x));
-  const corridor = rectanglePolygon(-voidHalf, minZ - 1, voidHalf, maxZ + 1);
-  const bottomRegion = difference(loopPolygon(waterLoop), corridor);
-  appendMultiPolygonCap(bottomRegion, yBottom, false, positions, indices);
-
-  for (let i = 0; i < voidProfile.length - 1; i += 1) {
-    const a = voidProfile[i]!;
-    const b = voidProfile[i + 1]!;
-    const tangent = b.clone().sub(a);
-    const inward = new THREE.Vector3(tangent.y, -tangent.x, 0).normalize();
-    appendOrientedQuad(positions, indices, [
-      new THREE.Vector3(a.x, a.y, minZ), new THREE.Vector3(a.x, a.y, maxZ),
-      new THREE.Vector3(b.x, b.y, maxZ), new THREE.Vector3(b.x, b.y, minZ),
-    ], inward);
-  }
-
-  const frontPoints = waterLoop.filter((point) => Math.abs(point.y - maxZ) < 1e-5);
-  const backPoints = waterLoop.filter((point) => Math.abs(point.y - minZ) < 1e-5);
-  const frontMinX = Math.min(...frontPoints.map((point) => point.x));
-  const frontMaxX = Math.max(...frontPoints.map((point) => point.x));
-  const backMinX = Math.min(...backPoints.map((point) => point.x));
-  const backMaxX = Math.max(...backPoints.map((point) => point.x));
-
-  const appendCap = (z: number, xMin: number, xMax: number, outwardZ: number) => {
-    const normal = new THREE.Vector3(0, 0, outwardZ);
-    if (-voidHalf > xMin + EPSILON) {
-      appendOrientedQuad(positions, indices, [
-        new THREE.Vector3(xMin, yBottom, z), new THREE.Vector3(-voidHalf, yBottom, z),
-        new THREE.Vector3(-voidHalf, yTop, z), new THREE.Vector3(xMin, yTop, z),
-      ], normal);
-    }
-    if (xMax > voidHalf + EPSILON) {
-      appendOrientedQuad(positions, indices, [
-        new THREE.Vector3(voidHalf, yBottom, z), new THREE.Vector3(xMax, yBottom, z),
-        new THREE.Vector3(xMax, yTop, z), new THREE.Vector3(voidHalf, yTop, z),
-      ], normal);
-    }
-    for (let i = 0; i < voidRoof.length - 1; i += 1) {
-      const a = voidRoof[i]!;
-      const b = voidRoof[i + 1]!;
-      appendOrientedQuad(positions, indices, [
-        new THREE.Vector3(a.x, a.y, z), new THREE.Vector3(b.x, b.y, z),
-        new THREE.Vector3(b.x, yTop, z), new THREE.Vector3(a.x, yTop, z),
-      ], normal);
-    }
-  };
-  appendCap(maxZ, frontMinX, frontMaxX, 1);
-  appendCap(minZ, backMinX, backMaxX, -1);
-  return finishGeometry(positions, indices);
-}
-
 function meshStats(group: THREE.Group): { triangles: number; vertices: number } {
   let triangles = 0;
   let vertices = 0;
@@ -940,7 +1030,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const group = new THREE.Group();
   group.name = settings.tunnelEnabled ? 'PUBLIC_AQUARIUM_WITH_TUNNEL' : 'PROFESSIONAL_PUBLIC_AQUARIUM';
   group.userData = {
-    generator: 'Aquarium Maker',
+    generator: 'Aquarium Maker 1.6',
     geometryProfile: 'composable profile/footprint system',
     profile: settings.profile,
     footprint: settings.footprint,
@@ -951,6 +1041,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     openTop: true,
     opaqueBackPanel: false,
     groundPreset: settings.groundPreset,
+    groundIrregularity: settings.groundIrregularity,
     tunnelEnabled: settings.tunnelEnabled,
     tunnelAxis: settings.tunnelEnabled ? settings.tunnelAxis : undefined,
     tunnelOffset: settings.tunnelEnabled ? settings.tunnelOffset : undefined,
@@ -973,19 +1064,23 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const waterLoop = createFootprintShapeLoop(settings, -waterInset);
 
   const profileBottom = settings.profile === 'belowFloor' ? -settings.depthBelowFloor : 0;
-  const profileTop = settings.profile === 'belowFloor' ? settings.heightAboveFloor : settings.height;
+  const profileTop = settings.profile === 'belowFloor'
+    ? settings.heightAboveFloor
+    : settings.profile === 'touchPool'
+      ? settings.touchPoolHeight
+      : settings.height;
   const baseTop = profileBottom + settings.baseHeight;
   const bottomRimTop = baseTop + settings.bottomRimHeight;
-  const topRimBottom = profileTop - settings.topRimHeight;
+  const topRimHeight = settings.profile === 'touchPool' ? settings.touchRimHeight : settings.topRimHeight;
+  const topRimBottom = profileTop - topRimHeight;
   const glassBottom = settings.profile === 'belowFloor' ? 0 : baseTop + settings.bottomRimHeight * 0.34;
-  const glassTop = profileTop - settings.topRimHeight * 0.34;
+  const glassTop = profileTop - topRimHeight * 0.34;
   const sandBottom = baseTop + settings.bottomRimHeight * 0.58;
   const sandTop = sandBottom + settings.sandHeight;
   const interiorWaterCeiling = topRimBottom - 0.055;
   const waterTop = sandTop + (interiorWaterCeiling - sandTop) * settings.waterLevel;
   const waterBottom = sandTop - Math.min(0.032, settings.sandHeight * 0.45);
   const waterDepth = Math.max(0.001, waterTop - waterBottom);
-  const polygonalFootprint = settings.footprint !== 'rectangle';
 
   const baseMaterial = new THREE.MeshStandardMaterial({
     name: 'Plinth_Painted', color: new THREE.Color(0.19, 0.215, 0.235), metalness: 0, roughness: 0.82,
@@ -995,6 +1090,9 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   });
   const subFloorMaterial = new THREE.MeshStandardMaterial({
     name: 'SubFloor_Body', color: new THREE.Color(settings.subFloorBodyColor), metalness: 0.08, roughness: 0.72,
+  });
+  const basinMaterial = new THREE.MeshStandardMaterial({
+    name: 'TouchPool_Basin', color: new THREE.Color(0.34, 0.39, 0.41), metalness: 0.04, roughness: 0.72,
   });
   const glassMaterial = new THREE.MeshPhysicalMaterial({
     name: 'Acrylic_Glass', color: new THREE.Color(0.84, 0.96, 1), metalness: 0, roughness: 0.025,
@@ -1009,10 +1107,10 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     transparent: true, opacity: 0.105, depthWrite: false, envMapIntensity: 1.1, side: THREE.FrontSide,
   });
 
-  const sandTexture = createGroundTexture(settings.groundPreset, settings.sandColor, settings.sandVariation, settings.sandGrain, settings.sandSeed);
+  const groundTexture = createGroundTexture(settings.groundPreset, settings.sandColor, settings.sandVariation, settings.sandGrain, settings.sandSeed);
   const groundRoughness = settings.groundPreset === 'algae' ? 0.78 : settings.groundPreset === 'gravel' ? 0.9 : 0.94;
-  const sandMaterial = new THREE.MeshStandardMaterial({
-    name: `Ground_${settings.groundPreset}`, color: 0xffffff, map: sandTexture, metalness: 0, roughness: groundRoughness,
+  const groundMaterial = new THREE.MeshStandardMaterial({
+    name: `Ground_${settings.groundPreset}`, color: 0xffffff, map: groundTexture, metalness: 0, roughness: groundRoughness,
   });
 
   const waterTextures = createWaterTextures(
@@ -1067,46 +1165,63 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     return mesh;
   }
 
-  const solidPrism = (loop: THREE.Vector2[], y0: number, y1: number, textured = false) =>
-    polygonalFootprint ? makeSolidFromLoop(loop, y0, y1, textured) : makeSolidPrism(loop, y0, y1, textured);
-  const waterGeometry = (loop: THREE.Vector2[], y0: number, y1: number) =>
-    polygonalFootprint ? makeWaterFromLoop(loop, y0, y1) : makeWaterVolume(loop, y0, y1);
-  const surfaceGeometry = (loop: THREE.Vector2[], y: number) =>
-    polygonalFootprint ? makeSurfaceFromPolygon(loop, y) : makeFlatWaterSurface(loop, y);
+  const asMulti = (loop: THREE.Vector2[]): MultiPolygon => [loopPolygon(loop)] as MultiPolygon;
+  const ringRegion = (outer: THREE.Vector2[], inner: THREE.Vector2[]): MultiPolygon => difference(loopPolygon(outer), loopPolygon(inner));
+  const baseRegion = asMulti(baseOuter);
+  const frameRegion = ringRegion(frameOuter, frameInner);
+  const glassRegion = ringRegion(glassOuter, glassInner);
+  const groundRegion = asMulti(sandLoop);
+  const waterRegion = asMulti(waterLoop);
+
+  const addGround = (region: MultiPolygon, yBottom: number, yTop: number): void => {
+    addMesh('INTERIOR_GroundBase', makePolygonPrism(region, yBottom, yTop, true, { includeTop: false }), groundMaterial, false, true);
+    addMesh('INTERIOR_GroundSurface', makeTerrainSurface(region, yTop, settings), groundMaterial, false, true);
+  };
+
+  const addWater = (region: MultiPolygon, yBottom: number, yTop: number): void => {
+    const volume = addMesh(
+      'WATER_Volume',
+      makePolygonPrism(region, yBottom, yTop - 0.002, false, { includeTop: false }),
+      waterVolumeMaterial,
+      false,
+      false,
+    );
+    volume.renderOrder = 1;
+    const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(region, yTop), waterSurfaceMaterial, false, false);
+    surface.renderOrder = 3;
+  };
 
   if (settings.profile === 'touchPool') {
     const rimInner = createFootprintShapeLoop(settings, -settings.touchRimWidth);
-    const pedestal = createFootprintShapeLoop(settings, -Math.min(settings.width, settings.depth) * 0.13);
-    const basinFloor = createFootprintShapeLoop(settings, -(settings.touchRimWidth + settings.touchBasinInset));
-    const pedestalTop = Math.min(settings.touchPedestalHeight, settings.height * 0.62);
-    const basinBottom = Math.max(0.04, pedestalTop - 0.1);
-    const rimBottom = settings.height - settings.topRimHeight;
-    const groundBottom = basinBottom + 0.14;
-    const groundTop = groundBottom + settings.sandHeight;
-    const touchWaterTop = Math.min(rimBottom - 0.055, groundTop + (rimBottom - groundTop) * Math.min(0.62, settings.waterLevel));
-    addMesh('STRUCTURE_Pedestal', solidPrism(pedestal, 0, pedestalTop), baseMaterial);
-    addMesh('STRUCTURE_BasinBody', makeRingPrism(glassOuter, rimInner, basinBottom, rimBottom), subFloorMaterial);
-    addMesh('STRUCTURE_TouchRim', makeRingPrism(glassOuter, rimInner, rimBottom, settings.height), frameMaterial);
-    addMesh('INTERIOR_GroundFloor', solidPrism(basinFloor, groundBottom, groundTop, true), sandMaterial, false, true);
-    const volume = addMesh('WATER_Volume', waterGeometry(basinFloor, groundTop - 0.015, touchWaterTop - 0.003), waterVolumeMaterial, false, false);
-    volume.renderOrder = 1;
-    const surface = addMesh('WATER_Surface', surfaceGeometry(basinFloor, touchWaterTop), waterSurfaceMaterial, false, false);
-    surface.renderOrder = 3;
+    const basinLoop = createFootprintShapeLoop(settings, -(settings.touchRimWidth + settings.touchBasinInset));
+    const pedestalInset = Math.min(settings.width, settings.depth) * 0.13;
+    const pedestalLoop = createFootprintShapeLoop(settings, -pedestalInset);
+    const pedestalTop = Math.min(settings.touchPedestalHeight, Math.max(0, profileTop - 0.2));
+    const rimBottom = profileTop - settings.touchRimHeight;
+    const touchWaterTop = rimBottom - 0.035;
+    const touchGroundTop = Math.max(pedestalTop + 0.05, touchWaterTop - settings.touchWaterDepth);
+    const touchGroundBottom = Math.max(pedestalTop + 0.02, touchGroundTop - settings.sandHeight);
+    const basinRegion = ringRegion(glassOuter, basinLoop);
+    const rimRegion = ringRegion(glassOuter, rimInner);
+
+    if (pedestalTop > 0.005) addMesh('STRUCTURE_Pedestal', makePolygonPrism(asMulti(pedestalLoop), 0, pedestalTop), baseMaterial);
+    addMesh('STRUCTURE_BasinWalls', makePolygonPrism(basinRegion, pedestalTop, rimBottom), basinMaterial);
+    addMesh('STRUCTURE_BasinFloor', makePolygonPrism(asMulti(basinLoop), pedestalTop, touchGroundBottom), basinMaterial);
+    addMesh('STRUCTURE_TouchRim', makePolygonPrism(rimRegion, rimBottom, profileTop), frameMaterial);
+    addGround(asMulti(basinLoop), touchGroundBottom, touchGroundTop);
+    addWater(asMulti(basinLoop), touchGroundTop - 0.012, touchWaterTop);
   } else if (!settings.tunnelEnabled) {
-    addMesh('STRUCTURE_BasePlinth', solidPrism(baseOuter, profileBottom, baseTop), baseMaterial);
-    addMesh('STRUCTURE_BottomRim', makeRingPrism(frameOuter, frameInner, baseTop, bottomRimTop), frameMaterial);
+    addMesh('STRUCTURE_BasePlinth', makePolygonPrism(baseRegion, profileBottom, baseTop), baseMaterial);
+    addMesh('STRUCTURE_BottomRim', makePolygonPrism(frameRegion, baseTop, bottomRimTop), frameMaterial);
     if (settings.profile === 'belowFloor') {
-      addMesh('STRUCTURE_SubFloorBody', makeRingPrism(glassOuter, glassInner, bottomRimTop, 0), subFloorMaterial);
-      addMesh('STRUCTURE_FloorRim', makeRingPrism(frameOuter, frameInner, 0, settings.floorRimHeight), frameMaterial);
+      addMesh('STRUCTURE_SubFloorBody', makePolygonPrism(glassRegion, bottomRimTop, 0), subFloorMaterial);
+      addMesh('STRUCTURE_FloorRim', makePolygonPrism(frameRegion, 0, settings.floorRimHeight), frameMaterial);
     }
-    const glass = addMesh('GLASS_AcrylicShell', makeRingPrism(glassOuter, glassInner, glassBottom, glassTop), glassMaterial, false, false);
+    const glass = addMesh('GLASS_AcrylicShell', makePolygonPrism(glassRegion, glassBottom, glassTop), glassMaterial, false, false);
     glass.renderOrder = 5;
-    addMesh('INTERIOR_GroundFloor', solidPrism(sandLoop, sandBottom, sandTop, true), sandMaterial, false, true);
-    const volume = addMesh('WATER_Volume', waterGeometry(waterLoop, waterBottom, waterTop - 0.002), waterVolumeMaterial, false, false);
-    volume.renderOrder = 1;
-    const surface = addMesh('WATER_Surface', surfaceGeometry(waterLoop, waterTop), waterSurfaceMaterial, false, false);
-    surface.renderOrder = 3;
-    addMesh('STRUCTURE_TopRim', makeRingPrism(frameOuter, frameInner, topRimBottom, profileTop), frameMaterial);
+    addGround(groundRegion, sandBottom, sandTop);
+    addWater(waterRegion, waterBottom, waterTop);
+    addMesh('STRUCTURE_TopRim', makePolygonPrism(frameRegion, topRimBottom, profileTop), frameMaterial);
   } else {
     const axis = settings.tunnelAxis;
     const offset = settings.tunnelOffset;
@@ -1120,56 +1235,51 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     const outerHalf = innerHalf + settings.tunnelGlassThickness;
     const outerArch = squareRoof
       ? archProfile(outerHalf, 0, wallHeight + settings.tunnelGlassThickness, 0, settings.tunnelCurveSegments)
-      : archProfile(
-        outerHalf,
-        0,
-        wallHeight,
-        innerRise + settings.tunnelGlassThickness,
-        settings.tunnelCurveSegments,
-      );
+      : archProfile(outerHalf, 0, wallHeight, innerRise + settings.tunnelGlassThickness, settings.tunnelCurveSegments);
+    const frameOuterHalf = outerHalf + settings.portalFrameWidth;
+    const localGlassOuter = toTunnelLocalLoop(glassOuter, axis, offset);
+    const localGlassInner = toTunnelLocalLoop(glassInner, axis, offset);
+    const outerSpan = selectTunnelSpan(localGlassOuter, frameOuterHalf);
+    const innerSpan = selectTunnelSpan(localGlassInner, outerHalf);
+    const cutSpan: TunnelSpan = {
+      exit: outerSpan.exit - settings.tunnelEndExtension - settings.portalFrameDepth,
+      entrance: outerSpan.entrance + settings.tunnelEndExtension + settings.portalFrameDepth,
+    };
+    const corridor = localCorridorPolygon(axis, offset, frameOuterHalf, cutSpan);
+    const baseCut = difference(loopPolygon(baseOuter), corridor);
+    const bottomRimCut = difference(loopPolygon(frameOuter), loopPolygon(frameInner), corridor);
+    const groundCut = difference(loopPolygon(sandLoop), corridor);
+    const subFloorCut = difference(loopPolygon(glassOuter), loopPolygon(glassInner), corridor);
+    const glassCut = difference(loopPolygon(glassOuter), loopPolygon(glassInner), localCorridorPolygon(axis, offset, outerHalf, outerSpan));
 
-    const longitudinalSize = axis === 'depth' ? settings.depth : settings.width;
-    const deep = longitudinalSize + settings.baseOverhang * 4 + 2;
-    const structuralCorridor = tunnelCorridorPolygon(axis, offset, innerHalf, deep);
-    const baseRegion = difference(loopPolygon(baseOuter), structuralCorridor);
-    const bottomRingRegion = difference(loopPolygon(frameOuter), loopPolygon(frameInner), structuralCorridor);
-    const sandRegion = difference(loopPolygon(sandLoop), structuralCorridor);
-    const subFloorRegion = difference(loopPolygon(glassOuter), loopPolygon(glassInner), structuralCorridor);
-    const floorRimRegion = difference(loopPolygon(frameOuter), loopPolygon(frameInner), structuralCorridor);
-
-    addMesh('STRUCTURE_BasePlinth', makePolygonPrism(baseRegion, profileBottom, baseTop), baseMaterial);
-    addMesh('STRUCTURE_BottomRim', makePolygonPrism(bottomRingRegion, baseTop, bottomRimTop), frameMaterial);
+    addMesh('STRUCTURE_BasePlinth', makePolygonPrism(baseCut, profileBottom, baseTop), baseMaterial);
+    addMesh('STRUCTURE_BottomRim', makePolygonPrism(bottomRimCut, baseTop, bottomRimTop), frameMaterial);
     if (settings.profile === 'belowFloor') {
-      addMesh('STRUCTURE_SubFloorBody', makePolygonPrism(subFloorRegion, bottomRimTop, 0), subFloorMaterial);
-      addMesh('STRUCTURE_FloorRim', makePolygonPrism(floorRimRegion, 0, settings.floorRimHeight), frameMaterial);
+      addMesh('STRUCTURE_SubFloorBody', makePolygonPrism(subFloorCut, bottomRimTop, 0), subFloorMaterial);
+      addMesh('STRUCTURE_FloorRim', makePolygonPrism(bottomRimCut, 0, settings.floorRimHeight), frameMaterial);
     }
-    addMesh('STRUCTURE_TopRim', makeRingPrism(frameOuter, frameInner, topRimBottom, profileTop), frameMaterial);
+    addMesh('STRUCTURE_TopRim', makePolygonPrism(frameRegion, topRimBottom, profileTop), frameMaterial);
 
-    const sideGlass = addMesh(
-      'GLASS_SideAndCornerShell',
-      makeSideCornerGlassShell(glassOuter, glassInner, glassBottom, glassTop, axis),
+    const glassShell = addMesh(
+      'GLASS_AcrylicShell',
+      makePolygonPrism(glassCut, glassBottom, glassTop, false, {
+        skipSide: (a, b) => isCorridorBoundaryEdge(a, b, axis, offset, outerHalf, outerSpan),
+      }),
       glassMaterial,
       false,
       false,
     );
-    sideGlass.renderOrder = 6;
+    glassShell.renderOrder = 6;
 
-    const localGlassOuter = toTunnelLocalLoop(glassOuter, axis, offset);
-    const entranceS = Math.max(...localGlassOuter.map((point) => point.y));
-    const exitS = Math.min(...localGlassOuter.map((point) => point.y));
-    const entrancePoints = localGlassOuter.filter((point) => Math.abs(point.y - entranceS) < 1e-5);
-    const exitPoints = localGlassOuter.filter((point) => Math.abs(point.y - exitS) < 1e-5);
-    const entranceMin = Math.min(...entrancePoints.map((point) => point.x));
-    const entranceMax = Math.max(...entrancePoints.map((point) => point.x));
-    const exitMin = Math.min(...exitPoints.map((point) => point.x));
-    const exitMax = Math.max(...exitPoints.map((point) => point.x));
-
+    const swappedOuter = localGlassOuter.map((point) => new THREE.Vector2(point.y, point.x));
+    const outerEntranceCross = containingInterval(lineIntervalsAtLocalX(swappedOuter, outerSpan.entrance - 0.002), 0);
+    const outerExitCross = containingInterval(lineIntervalsAtLocalX(swappedOuter, outerSpan.exit + 0.002), 0);
     const entranceWall = addMesh(
       'GLASS_EntranceWall',
       orientTunnelGeometry(
         makeEndWallWithPortal(
-          entranceMin, entranceMax,
-          entranceS - settings.glassThickness, entranceS,
+          outerEntranceCross.exit, outerEntranceCross.entrance,
+          innerSpan.entrance, outerSpan.entrance,
           glassBottom, glassTop, outerHalf, outerArch.roof,
         ),
         axis,
@@ -1184,8 +1294,8 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
       'GLASS_ExitWall',
       orientTunnelGeometry(
         makeEndWallWithPortal(
-          exitMin, exitMax,
-          exitS, exitS + settings.glassThickness,
+          outerExitCross.exit, outerExitCross.entrance,
+          outerSpan.exit, innerSpan.exit,
           glassBottom, glassTop, outerHalf, outerArch.roof,
         ),
         axis,
@@ -1197,10 +1307,10 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     );
     exitWall.renderOrder = 6;
 
-    addMesh('INTERIOR_GroundFloor', makePolygonPrism(sandRegion, sandBottom, sandTop, true), sandMaterial, false, true);
+    addGround(groundCut, sandBottom, sandTop);
 
-    const tunnelEntrance = entranceS + settings.tunnelEndExtension;
-    const tunnelExit = exitS - settings.tunnelEndExtension;
+    const tunnelEntrance = outerSpan.entrance + settings.tunnelEndExtension;
+    const tunnelExit = outerSpan.exit - settings.tunnelEndExtension;
     const tunnel = addMesh(
       'TUNNEL_AcrylicShell',
       orientTunnelGeometry(
@@ -1234,51 +1344,23 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
       const rimWidth = settings.tunnelSideRimWidth;
       addMesh(
         'TUNNEL_LeftSideRim',
-        orientTunnelGeometry(
-          makeBoxGeometry(rimWidth, rimHeight, tunnelLength, -innerHalf - rimWidth * 0.5, rimHeight * 0.5, centerS),
-          axis,
-          offset,
-        ),
+        orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, tunnelLength, -innerHalf - rimWidth * 0.5, rimHeight * 0.5, centerS), axis, offset),
         frameMaterial,
       );
       addMesh(
         'TUNNEL_RightSideRim',
-        orientTunnelGeometry(
-          makeBoxGeometry(rimWidth, rimHeight, tunnelLength, innerHalf + rimWidth * 0.5, rimHeight * 0.5, centerS),
-          axis,
-          offset,
-        ),
+        orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, tunnelLength, innerHalf + rimWidth * 0.5, rimHeight * 0.5, centerS), axis, offset),
         frameMaterial,
       );
     }
 
-    const frameOuterHalf = outerHalf + settings.portalFrameWidth;
     const frameArch = squareRoof
-      ? archProfile(
-        frameOuterHalf,
-        0,
-        wallHeight + settings.tunnelGlassThickness + settings.portalFrameWidth,
-        0,
-        settings.tunnelCurveSegments,
-      )
-      : archProfile(
-        frameOuterHalf,
-        0,
-        wallHeight,
-        innerRise + settings.tunnelGlassThickness + settings.portalFrameWidth,
-        settings.tunnelCurveSegments,
-      );
+      ? archProfile(frameOuterHalf, 0, wallHeight + settings.tunnelGlassThickness + settings.portalFrameWidth, 0, settings.tunnelCurveSegments)
+      : archProfile(frameOuterHalf, 0, wallHeight, innerRise + settings.tunnelGlassThickness + settings.portalFrameWidth, settings.tunnelCurveSegments);
     addMesh(
       'TUNNEL_01_EntranceFrame',
       orientTunnelGeometry(
-        makeProfileShell(
-          outerArch.full,
-          frameArch.full,
-          entranceS + settings.portalFrameDepth,
-          entranceS - 0.015,
-          true,
-          true,
-        ),
+        makeProfileShell(outerArch.full, frameArch.full, outerSpan.entrance + settings.portalFrameDepth, outerSpan.entrance - 0.015, true, true),
         axis,
         offset,
       ),
@@ -1287,14 +1369,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     addMesh(
       'TUNNEL_02_ExitFrame',
       orientTunnelGeometry(
-        makeProfileShell(
-          outerArch.full,
-          frameArch.full,
-          exitS + 0.015,
-          exitS - settings.portalFrameDepth,
-          true,
-          true,
-        ),
+        makeProfileShell(outerArch.full, frameArch.full, outerSpan.exit + 0.015, outerSpan.exit - settings.portalFrameDepth, true, true),
         axis,
         offset,
       ),
@@ -1318,10 +1393,11 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
         settings.tunnelCurveSegments,
       );
     const localWaterLoop = toTunnelLocalLoop(waterLoop, axis, offset);
+    const waterSpan = selectTunnelSpan(localWaterLoop, voidHalf);
     const volume = addMesh(
       'WATER_Volume',
       orientTunnelGeometry(
-        makeWaterVolumeWithTunnel(localWaterLoop, waterBottom, waterTop - 0.004, voidArch.full, voidArch.roof),
+        makeGenericWaterVolumeWithTunnel(localWaterLoop, waterBottom, waterTop - 0.004, voidArch.full, voidArch.roof, voidHalf, waterSpan),
         axis,
         offset,
       ),
@@ -1330,9 +1406,8 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
       false,
     );
     volume.renderOrder = 1;
-    const surface = addMesh('WATER_Surface', makeFlatWaterSurface(waterLoop, waterTop), waterSurfaceMaterial, false, false);
+    const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(waterRegion, waterTop), waterSurfaceMaterial, false, false);
     surface.renderOrder = 3;
-
   }
 
   const stats = meshStats(group);
