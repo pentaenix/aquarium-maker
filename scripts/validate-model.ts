@@ -14,7 +14,7 @@ class FakeCanvas {
 
 const THREE = await import('three');
 const { buildAquarium } = await import('../app/src/model/aquarium');
-const { cloneSettings, DEFAULT_SETTINGS, normalizeSettings } = await import('../app/src/model/settings');
+const { cloneSettings, createPassage, DEFAULT_SETTINGS, normalizeSettings } = await import('../app/src/model/settings');
 
 function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
   const build = buildAquarium(normalizeSettings(settings));
@@ -23,6 +23,7 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
   let invalid = 0;
   let degenerate = 0;
   const names: string[] = [];
+  const acrylicMaterials = new Set<string>();
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
   const c = new THREE.Vector3();
@@ -34,6 +35,10 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
     if (!(object instanceof THREE.Mesh)) return;
     meshes += 1;
     names.push(object.name);
+    if (/GLASS_AcrylicShell|AcrylicShell|GlassFloor/.test(object.name)) {
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) acrylicMaterials.add(material.uuid);
+    }
     const geometry = object.geometry;
     const position = geometry.getAttribute('position');
     const normal = geometry.getAttribute('normal');
@@ -61,8 +66,11 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
       if (!Number.isFinite(cross.lengthSq()) || cross.lengthSq() < 1e-16) degenerate += 1;
     }
   });
-  console.log(JSON.stringify({ label, meshes, triangles: build.triangles, vertices: build.vertices, invalid, degenerate, size: box.getSize(new THREE.Vector3()).toArray(), names }, null, 2));
-  if (invalid || degenerate) process.exitCode = 1;
+  const navigation = build.group.userData.navigation as { schema?: string; regions?: unknown[]; portals?: unknown[] } | undefined;
+  const navigationValid = navigation?.schema === 'aquarium-maker-navigation' && Array.isArray(navigation.regions) && Array.isArray(navigation.portals);
+  const acrylicMaterialConsistent = acrylicMaterials.size <= 1;
+  console.log(JSON.stringify({ label, meshes, triangles: build.triangles, vertices: build.vertices, invalid, degenerate, navigationValid, acrylicMaterialConsistent, regions: navigation?.regions?.length ?? 0, portals: navigation?.portals?.length ?? 0, size: box.getSize(new THREE.Vector3()).toArray(), names }, null, 2));
+  if (invalid || degenerate || !navigationValid || !acrylicMaterialConsistent) process.exitCode = 1;
   build.dispose();
 }
 
@@ -215,3 +223,76 @@ uMixedCorners.shapeCornerRadii = {
   uFrontLeft: 0.7,
 };
 validate('u-shape-independent-corners', uMixedCorners);
+
+
+const lElbow = cloneSettings(DEFAULT_SETTINGS);
+lElbow.footprint = 'lShape';
+lElbow.lVerticalArmWidth = 3.4;
+lElbow.lVerticalArmLength = 8.2;
+lElbow.lHorizontalArmWidth = 3.0;
+lElbow.lHorizontalArmLength = 11.4;
+const lElbowPassage = createPassage(lElbow, 'tunnel', 'elbow');
+lElbowPassage.entrySide = 'front';
+lElbowPassage.exitSide = 'right';
+lElbowPassage.entryOffset = -4.0;
+lElbowPassage.exitOffset = -2.6;
+lElbowPassage.width = 1.35;
+lElbow.passages = [lElbowPassage];
+validate('l-shape-elbow-tunnel', lElbow);
+
+const uMulti = cloneSettings(DEFAULT_SETTINGS);
+uMulti.footprint = 'uShape';
+uMulti.uBridgeLength = 12.6;
+uMulti.uBridgeDepth = 2.6;
+uMulti.uLeftArmWidth = 2.6;
+uMulti.uRightArmWidth = 3.2;
+uMulti.uLeftArmLength = 8.8;
+uMulti.uRightArmLength = 6.9;
+const uLeftPassage = createPassage(uMulti, 'tunnel', 'straight', 1);
+uLeftPassage.name = 'Left arm tunnel';
+uLeftPassage.entrySide = 'front';
+uLeftPassage.exitSide = 'back';
+uLeftPassage.entryOffset = -5.0;
+uLeftPassage.width = 1.05;
+const uRightPassage = createPassage(uMulti, 'tunnel', 'straight', 2);
+uRightPassage.name = 'Right arm tunnel';
+uRightPassage.entrySide = 'front';
+uRightPassage.exitSide = 'back';
+uRightPassage.entryOffset = 4.7;
+uRightPassage.width = 1.25;
+const uBridgePassage = createPassage(uMulti, 'tunnel', 'straight', 3);
+uBridgePassage.name = 'Rear cross tunnel';
+uBridgePassage.entrySide = 'left';
+uBridgePassage.exitSide = 'right';
+uBridgePassage.entryOffset = -3.1;
+uBridgePassage.width = 1.0;
+uMulti.passages = [uLeftPassage, uRightPassage, uBridgePassage];
+validate('u-shape-three-passages', uMulti);
+
+const belowMulti = cloneSettings(uMulti);
+belowMulti.profile = 'belowFloor';
+belowMulti.depthBelowFloor = 4.5;
+belowMulti.heightAboveFloor = 1.35;
+belowMulti.passages = belowMulti.passages.map((passage) => ({ ...passage, glassFloor: true, separatorSpacing: 0.55 }));
+validate('u-shape-below-floor-three-bridges', belowMulti);
+
+const alcove = cloneSettings(DEFAULT_SETTINGS);
+alcove.width = 13;
+alcove.depth = 8;
+const viewingAlcove = createPassage(alcove, 'alcove', 'straight');
+viewingAlcove.entrySide = 'front';
+viewingAlcove.entryOffset = 2.0;
+viewingAlcove.alcoveDepth = 2.8;
+viewingAlcove.width = 2.4;
+alcove.passages = [viewingAlcove];
+validate('viewing-alcove-overhang', alcove);
+
+const crossed = cloneSettings(DEFAULT_SETTINGS);
+crossed.width = 14;
+crossed.depth = 9;
+const northSouth = createPassage(crossed, 'tunnel', 'straight', 1);
+northSouth.entrySide = 'front'; northSouth.exitSide = 'back'; northSouth.entryOffset = -2.7; northSouth.width = 1.5;
+const eastWest = createPassage(crossed, 'tunnel', 'straight', 2);
+eastWest.entrySide = 'left'; eastWest.exitSide = 'right'; eastWest.entryOffset = 2.2; eastWest.width = 1.4;
+crossed.passages = [northSouth, eastWest];
+validate('two-directions-at-once', crossed);

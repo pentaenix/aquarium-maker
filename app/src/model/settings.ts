@@ -11,6 +11,37 @@ export type GroundPreset = 'sand' | 'dirt' | 'algae' | 'gravel';
 export type WaterSurfacePreset = 'calm' | 'realistic' | 'balanced' | 'cartoon' | 'pixel';
 export type AquariumProfile = 'standard' | 'belowFloor' | 'touchPool';
 export type FootprintType = 'rectangle' | 'lShape' | 'uShape';
+export type FootprintRotation = 0 | 90 | 180 | 270;
+
+export type PassageKind = 'tunnel' | 'alcove';
+export type PassageRoute = 'straight' | 'elbow';
+export type PassageSide = 'front' | 'back' | 'left' | 'right';
+
+export interface PassageSettings {
+  id: string;
+  name: string;
+  kind: PassageKind;
+  route: PassageRoute;
+  entrySide: PassageSide;
+  exitSide: PassageSide;
+  entryOffset: number;
+  exitOffset: number;
+  alcoveDepth: number;
+  width: number;
+  wallHeight: number;
+  roundness: number;
+  glassThickness: number;
+  curveSegments: number;
+  endExtension: number;
+  portalFrameWidth: number;
+  portalFrameDepth: number;
+  waterClearance: number;
+  glassFloor: boolean;
+  sideRimWidth: number;
+  bridgeRimHeight: number;
+  separatorSpacing: number;
+  separatorWidth: number;
+}
 
 export interface CornerModes {
   frontLeft: CornerMode;
@@ -52,16 +83,16 @@ export const SHAPE_CORNER_LABELS: Record<ShapeCornerKey, string> = {
   lBackRight: 'Back right',
   lOuterRight: 'Outer shoulder',
   lInnerElbow: 'Inner elbow',
-  lFrontRight: 'Front right',
+  lFrontRight: 'Vertical arm end',
   lFrontLeft: 'Front left',
   uBackLeft: 'Back left',
   uBackRight: 'Back right',
-  uFrontRight: 'Front right',
-  uMouthRight: 'Right mouth',
+  uFrontRight: 'Right arm outer end',
+  uMouthRight: 'Right arm inner end',
   uInnerRight: 'Inner right',
   uInnerLeft: 'Inner left',
-  uMouthLeft: 'Left mouth',
-  uFrontLeft: 'Front left',
+  uMouthLeft: 'Left arm inner end',
+  uFrontLeft: 'Left arm outer end',
 };
 
 export function activeShapeCornerKeys(footprint: FootprintType): ShapeCornerKey[] {
@@ -76,6 +107,8 @@ export interface AquariumSettings {
   height: number;
   profile: AquariumProfile;
   footprint: FootprintType;
+  footprintRotation: FootprintRotation;
+  footprintMirrored: boolean;
   radii: CornerRadii;
   cornerModes: CornerModes;
   shapeCornerRadii: ShapeCornerRadii;
@@ -94,18 +127,27 @@ export interface AquariumSettings {
   floorRimHeight: number;
   subFloorBodyColor: string;
 
-  // Canonical arm measurements used by the geometry.
+  // Legacy dimensions retained for old shared links and migration.
   lArmWidth: number;
   lRearDepth: number;
   uLeftArmWidth: number;
   uRightArmWidth: number;
   uBackDepth: number;
-  // Derived opening measurements exposed by the UI for direct editing.
   lOpeningWidth: number;
   lOpeningDepth: number;
   uOpeningWidth: number;
   uOpeningDepth: number;
   uOpeningOffset: number;
+
+  // v1.8 independent arm model.
+  lVerticalArmWidth: number;
+  lVerticalArmLength: number;
+  lHorizontalArmWidth: number;
+  lHorizontalArmLength: number;
+  uLeftArmLength: number;
+  uRightArmLength: number;
+  uBridgeDepth: number;
+  uBridgeLength: number;
 
   touchPoolHeight: number;
   touchWaterDepth: number;
@@ -136,6 +178,8 @@ export interface AquariumSettings {
   waterSurfacePreset: WaterSurfacePreset;
   waterSeed: number;
 
+  // Legacy single-tunnel editor defaults. They are also used when creating a
+  // new passage and keep old saved configurations working.
   tunnelEnabled: boolean;
   tunnelAxis: TunnelAxis;
   tunnelOffset: number;
@@ -154,6 +198,8 @@ export interface AquariumSettings {
   tunnelBridgeSeparatorSpacing: number;
   tunnelBridgeSeparatorWidth: number;
 
+  passages: PassageSettings[];
+  exportNavigationJson: boolean;
   exportScale: number;
 }
 
@@ -184,6 +230,8 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   height: 4.15,
   profile: 'standard',
   footprint: 'rectangle',
+  footprintRotation: 0,
+  footprintMirrored: false,
   radii: {
     frontLeft: 0.58,
     frontRight: 0.58,
@@ -222,6 +270,15 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   uOpeningWidth: 5.1,
   uOpeningDepth: 2.6,
   uOpeningOffset: 0,
+
+  lVerticalArmWidth: 3.55,
+  lVerticalArmLength: 7.4,
+  lHorizontalArmWidth: 2.9,
+  lHorizontalArmLength: 10.4,
+  uLeftArmLength: 7.2,
+  uRightArmLength: 7.2,
+  uBridgeDepth: 2.2,
+  uBridgeLength: 11.2,
 
   touchPoolHeight: 0.5,
   touchWaterDepth: 0.28,
@@ -270,8 +327,14 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   tunnelBridgeSeparatorSpacing: 1.2,
   tunnelBridgeSeparatorWidth: 0.035,
 
+  passages: [],
+  exportNavigationJson: true,
   exportScale: 10,
 };
+
+export function clonePassage(source: PassageSettings): PassageSettings {
+  return { ...source };
+}
 
 export function cloneSettings(source: AquariumSettings = DEFAULT_SETTINGS): AquariumSettings {
   return {
@@ -280,46 +343,150 @@ export function cloneSettings(source: AquariumSettings = DEFAULT_SETTINGS): Aqua
     cornerModes: { ...source.cornerModes },
     shapeCornerRadii: { ...source.shapeCornerRadii },
     shapeCornerModes: { ...source.shapeCornerModes },
+    passages: (source.passages ?? []).map(clonePassage),
   };
+}
+
+export function createPassage(
+  settings: AquariumSettings,
+  kind: PassageKind = 'tunnel',
+  route: PassageRoute = 'straight',
+  index = settings.passages.length + 1,
+): PassageSettings {
+  const entrySide: PassageSide = 'front';
+  const exitSide: PassageSide = route === 'elbow' ? 'right' : 'back';
+  return {
+    id: `passage-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    name: kind === 'alcove' ? `Viewing alcove ${index}` : route === 'elbow' ? `L tunnel ${index}` : `Tunnel ${index}`,
+    kind,
+    route,
+    entrySide,
+    exitSide,
+    entryOffset: 0,
+    exitOffset: 0,
+    alcoveDepth: Math.max(1.2, Math.min(settings.width, settings.depth) * 0.34),
+    width: settings.tunnelWidth,
+    wallHeight: settings.tunnelWallHeight,
+    roundness: settings.tunnelRoundness,
+    glassThickness: settings.tunnelGlassThickness,
+    curveSegments: settings.tunnelCurveSegments,
+    endExtension: settings.tunnelEndExtension,
+    portalFrameWidth: settings.portalFrameWidth,
+    portalFrameDepth: settings.portalFrameDepth,
+    waterClearance: settings.tunnelWaterClearance,
+    glassFloor: settings.tunnelGlassFloor,
+    sideRimWidth: settings.tunnelSideRimWidth,
+    bridgeRimHeight: settings.tunnelBridgeRimHeight,
+    separatorSpacing: settings.tunnelBridgeSeparatorSpacing,
+    separatorWidth: settings.tunnelBridgeSeparatorWidth,
+  };
+}
+
+export function legacyPassage(settings: AquariumSettings): PassageSettings {
+  const passage = createPassage(settings, 'tunnel', 'straight', 1);
+  passage.id = 'legacy-tunnel';
+  passage.name = 'Main tunnel';
+  passage.entrySide = settings.tunnelAxis === 'depth' ? 'front' : 'left';
+  passage.exitSide = settings.tunnelAxis === 'depth' ? 'back' : 'right';
+  passage.entryOffset = settings.tunnelOffset;
+  passage.exitOffset = settings.tunnelOffset;
+  return passage;
+}
+
+export function activePassages(settings: AquariumSettings): PassageSettings[] {
+  if (settings.profile === 'touchPool') return [];
+  if (settings.passages.length > 0) return settings.passages;
+  return settings.tunnelEnabled ? [legacyPassage(settings)] : [];
 }
 
 function isTunnelAxis(value: unknown): value is TunnelAxis {
   return value === 'depth' || value === 'width';
 }
-
 function isGroundPreset(value: unknown): value is GroundPreset {
   return value === 'sand' || value === 'dirt' || value === 'algae' || value === 'gravel';
 }
-
 function isWaterSurfacePreset(value: unknown): value is WaterSurfacePreset {
   return value === 'calm' || value === 'realistic' || value === 'balanced' || value === 'cartoon' || value === 'pixel';
 }
-
 function isCornerMode(value: unknown): value is CornerMode {
   return value === 'rounded' || value === 'chamfer' || value === 'square';
 }
-
 function isProfile(value: unknown): value is AquariumProfile {
   return value === 'standard' || value === 'belowFloor' || value === 'touchPool';
 }
-
 function isFootprint(value: unknown): value is FootprintType {
   return value === 'rectangle' || value === 'lShape' || value === 'uShape';
 }
-
+function isFootprintRotation(value: unknown): value is FootprintRotation {
+  return value === 0 || value === 90 || value === 180 || value === 270;
+}
+function isPassageKind(value: unknown): value is PassageKind {
+  return value === 'tunnel' || value === 'alcove';
+}
+function isPassageRoute(value: unknown): value is PassageRoute {
+  return value === 'straight' || value === 'elbow';
+}
+function isPassageSide(value: unknown): value is PassageSide {
+  return value === 'front' || value === 'back' || value === 'left' || value === 'right';
+}
 function isHexColor(value: unknown): value is string {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+export function oppositeSide(side: PassageSide): PassageSide {
+  if (side === 'front') return 'back';
+  if (side === 'back') return 'front';
+  if (side === 'left') return 'right';
+  return 'left';
+}
+
+export function sidesAreAdjacent(a: PassageSide, b: PassageSide): boolean {
+  return a !== b && oppositeSide(a) !== b;
 }
 
 export function tunnelAllowed(settings: AquariumSettings): boolean {
   return settings.profile !== 'touchPool';
 }
 
+function normalizePassage(passage: PassageSettings, settings: AquariumSettings, index: number): PassageSettings {
+  const finite = (value: number, fallback: number) => Number.isFinite(value) ? value : fallback;
+  const atLeast = (value: number, minimum: number, fallback = minimum) => Math.max(minimum, finite(value, fallback));
+  const clamp = (value: number, min: number, max: number, fallback = min) => Math.min(max, Math.max(min, finite(value, fallback)));
+  const normalized = { ...createPassage(settings, 'tunnel', 'straight', index + 1), ...passage };
+  normalized.id = typeof normalized.id === 'string' && normalized.id ? normalized.id : `passage-${index + 1}`;
+  normalized.name = typeof normalized.name === 'string' && normalized.name.trim() ? normalized.name.trim().slice(0, 48) : `Passage ${index + 1}`;
+  if (!isPassageKind(normalized.kind)) normalized.kind = 'tunnel';
+  if (!isPassageRoute(normalized.route)) normalized.route = 'straight';
+  if (!isPassageSide(normalized.entrySide)) normalized.entrySide = 'front';
+  if (!isPassageSide(normalized.exitSide)) normalized.exitSide = oppositeSide(normalized.entrySide);
+  if (normalized.kind === 'alcove') normalized.route = 'straight';
+  if (normalized.route === 'straight' && normalized.kind === 'tunnel') normalized.exitSide = oppositeSide(normalized.entrySide);
+  if (normalized.route === 'elbow' && !sidesAreAdjacent(normalized.entrySide, normalized.exitSide)) {
+    normalized.exitSide = normalized.entrySide === 'front' || normalized.entrySide === 'back' ? 'right' : 'front';
+  }
+  normalized.entryOffset = finite(normalized.entryOffset, 0);
+  normalized.exitOffset = finite(normalized.exitOffset, normalized.entryOffset);
+  normalized.alcoveDepth = atLeast(normalized.alcoveDepth, 0.35, 2);
+  normalized.width = atLeast(normalized.width, 0.2, settings.tunnelWidth);
+  normalized.wallHeight = atLeast(normalized.wallHeight, 0.15, settings.tunnelWallHeight);
+  normalized.roundness = clamp(normalized.roundness, 0, 4, settings.tunnelRoundness);
+  normalized.glassThickness = atLeast(normalized.glassThickness, 0.005, settings.tunnelGlassThickness);
+  normalized.curveSegments = Math.round(clamp(normalized.curveSegments, 3, 64, settings.tunnelCurveSegments));
+  normalized.endExtension = atLeast(normalized.endExtension, 0, settings.tunnelEndExtension);
+  normalized.portalFrameWidth = atLeast(normalized.portalFrameWidth, 0.005, settings.portalFrameWidth);
+  normalized.portalFrameDepth = atLeast(normalized.portalFrameDepth, 0.005, settings.portalFrameDepth);
+  normalized.waterClearance = atLeast(normalized.waterClearance, 0.001, settings.tunnelWaterClearance);
+  normalized.glassFloor = Boolean(normalized.glassFloor);
+  normalized.sideRimWidth = atLeast(normalized.sideRimWidth, 0.005, settings.tunnelSideRimWidth);
+  normalized.bridgeRimHeight = atLeast(normalized.bridgeRimHeight, 0.01, settings.tunnelBridgeRimHeight);
+  normalized.separatorSpacing = atLeast(normalized.separatorSpacing, 0.15, settings.tunnelBridgeSeparatorSpacing);
+  normalized.separatorWidth = atLeast(normalized.separatorWidth, 0.004, settings.tunnelBridgeSeparatorWidth);
+  return normalized;
+}
+
 /**
- * Slider ranges are intentionally comfortable editing ranges, not hard model
- * limits. Typed values may exceed those ranges whenever the resulting geometry
- * is still physically meaningful. Only semantic values (percentages, segment
- * counts, and values that must fit inside the tank) receive upper bounds here.
+ * Slider ranges are editing ranges, not hard model limits. Typed values may
+ * exceed them; normalization only guards semantics and impossible zero sizes.
  */
 export function normalizeSettings(settings: AquariumSettings): AquariumSettings {
   const finite = (value: number, fallback: number) => Number.isFinite(value) ? value : fallback;
@@ -328,6 +495,8 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
 
   if (!isProfile(settings.profile)) settings.profile = 'standard';
   if (!isFootprint(settings.footprint)) settings.footprint = 'rectangle';
+  if (!isFootprintRotation(settings.footprintRotation)) settings.footprintRotation = 0;
+  settings.footprintMirrored = Boolean(settings.footprintMirrored);
 
   settings.width = atLeast(settings.width, 0.8, DEFAULT_SETTINGS.width);
   settings.depth = atLeast(settings.depth, 0.8, DEFAULT_SETTINGS.depth);
@@ -337,37 +506,57 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.floorRimHeight = clamp(settings.floorRimHeight, 0.005, Math.max(0.01, settings.heightAboveFloor * 0.5), DEFAULT_SETTINGS.floorRimHeight);
   if (!isHexColor(settings.subFloorBodyColor)) settings.subFloorBodyColor = DEFAULT_SETTINGS.subFloorBodyColor;
 
-  const minDimension = Math.min(settings.width, settings.depth);
-  const maxRadius = Math.max(0.02, minDimension * 0.49);
-  settings.curveSegments = Math.round(clamp(settings.curveSegments, 2, 64, DEFAULT_SETTINGS.curveSegments));
+  // Independent arm dimensions. The bounding width/depth are derived for L/U.
+  settings.lVerticalArmWidth = atLeast(settings.lVerticalArmWidth ?? settings.lArmWidth, 0.18, DEFAULT_SETTINGS.lVerticalArmWidth);
+  settings.lVerticalArmLength = atLeast(settings.lVerticalArmLength ?? settings.depth, 0.5, DEFAULT_SETTINGS.lVerticalArmLength);
+  settings.lHorizontalArmWidth = atLeast(settings.lHorizontalArmWidth ?? settings.lRearDepth, 0.18, DEFAULT_SETTINGS.lHorizontalArmWidth);
+  settings.lHorizontalArmLength = atLeast(settings.lHorizontalArmLength ?? settings.width, 0.5, DEFAULT_SETTINGS.lHorizontalArmLength);
+  settings.lVerticalArmWidth = Math.min(settings.lVerticalArmWidth, Math.max(0.18, settings.lHorizontalArmLength - 0.12));
+  settings.lHorizontalArmWidth = Math.min(settings.lHorizontalArmWidth, Math.max(0.18, settings.lVerticalArmLength - 0.12));
 
-  for (const key of Object.keys(settings.radii) as Array<keyof CornerRadii>) {
-    settings.radii[key] = clamp(settings.radii[key], 0.002, maxRadius, DEFAULT_SETTINGS.radii[key]);
-    if (!isCornerMode(settings.cornerModes[key])) settings.cornerModes[key] = 'rounded';
-  }
-
-  for (const key of Object.keys(DEFAULT_SETTINGS.shapeCornerRadii) as ShapeCornerKey[]) {
-    settings.shapeCornerRadii[key] = clamp(settings.shapeCornerRadii[key], 0.002, maxRadius, DEFAULT_SETTINGS.shapeCornerRadii[key]);
-    if (!isCornerMode(settings.shapeCornerModes[key])) settings.shapeCornerModes[key] = 'rounded';
-  }
-
-  settings.lArmWidth = clamp(settings.lArmWidth, 0.12, Math.max(0.13, settings.width - 0.12), DEFAULT_SETTINGS.lArmWidth);
-  settings.lRearDepth = clamp(settings.lRearDepth, 0.12, Math.max(0.13, settings.depth - 0.12), DEFAULT_SETTINGS.lRearDepth);
-  settings.lOpeningWidth = Math.max(0.12, settings.width - settings.lArmWidth);
-  settings.lOpeningDepth = Math.max(0.12, settings.depth - settings.lRearDepth);
-
-  settings.uLeftArmWidth = atLeast(settings.uLeftArmWidth, 0.1, DEFAULT_SETTINGS.uLeftArmWidth);
-  settings.uRightArmWidth = atLeast(settings.uRightArmWidth, 0.1, DEFAULT_SETTINGS.uRightArmWidth);
-  const maxArmTotal = Math.max(0.2, settings.width - 0.2);
+  settings.uBridgeLength = atLeast(settings.uBridgeLength ?? settings.width, 0.8, DEFAULT_SETTINGS.uBridgeLength);
+  settings.uLeftArmLength = atLeast(settings.uLeftArmLength ?? settings.depth, 0.5, DEFAULT_SETTINGS.uLeftArmLength);
+  settings.uRightArmLength = atLeast(settings.uRightArmLength ?? settings.depth, 0.5, DEFAULT_SETTINGS.uRightArmLength);
+  settings.uLeftArmWidth = atLeast(settings.uLeftArmWidth, 0.15, DEFAULT_SETTINGS.uLeftArmWidth);
+  settings.uRightArmWidth = atLeast(settings.uRightArmWidth, 0.15, DEFAULT_SETTINGS.uRightArmWidth);
+  settings.uBridgeDepth = atLeast(settings.uBridgeDepth ?? settings.uBackDepth, 0.15, DEFAULT_SETTINGS.uBridgeDepth);
+  const maxArmTotal = Math.max(0.3, settings.uBridgeLength - 0.2);
   if (settings.uLeftArmWidth + settings.uRightArmWidth > maxArmTotal) {
     const scale = maxArmTotal / Math.max(settings.uLeftArmWidth + settings.uRightArmWidth, 1e-6);
     settings.uLeftArmWidth *= scale;
     settings.uRightArmWidth *= scale;
   }
-  settings.uBackDepth = clamp(settings.uBackDepth, 0.12, Math.max(0.13, settings.depth - 0.12), DEFAULT_SETTINGS.uBackDepth);
-  settings.uOpeningWidth = Math.max(0.2, settings.width - settings.uLeftArmWidth - settings.uRightArmWidth);
-  settings.uOpeningDepth = Math.max(0.12, settings.depth - settings.uBackDepth);
+  settings.uBridgeDepth = Math.min(settings.uBridgeDepth, Math.max(0.15, Math.min(settings.uLeftArmLength, settings.uRightArmLength) - 0.12));
+
+  if (settings.footprint === 'lShape') {
+    settings.width = settings.lHorizontalArmLength;
+    settings.depth = settings.lVerticalArmLength;
+  } else if (settings.footprint === 'uShape') {
+    settings.width = settings.uBridgeLength;
+    settings.depth = Math.max(settings.uLeftArmLength, settings.uRightArmLength);
+  }
+
+  // Keep legacy/derived fields synchronized for old UI links and metadata.
+  settings.lArmWidth = settings.lVerticalArmWidth;
+  settings.lRearDepth = settings.lHorizontalArmWidth;
+  settings.lOpeningWidth = Math.max(0.12, settings.lHorizontalArmLength - settings.lVerticalArmWidth);
+  settings.lOpeningDepth = Math.max(0.12, settings.lVerticalArmLength - settings.lHorizontalArmWidth);
+  settings.uBackDepth = settings.uBridgeDepth;
+  settings.uOpeningWidth = Math.max(0.2, settings.uBridgeLength - settings.uLeftArmWidth - settings.uRightArmWidth);
+  settings.uOpeningDepth = Math.max(0.12, Math.max(settings.uLeftArmLength, settings.uRightArmLength) - settings.uBridgeDepth);
   settings.uOpeningOffset = (settings.uLeftArmWidth - settings.uRightArmWidth) * 0.5;
+
+  const minDimension = Math.min(settings.width, settings.depth);
+  const maxRadius = Math.max(0.02, minDimension * 0.49);
+  settings.curveSegments = Math.round(clamp(settings.curveSegments, 2, 64, DEFAULT_SETTINGS.curveSegments));
+  for (const key of Object.keys(settings.radii) as Array<keyof CornerRadii>) {
+    settings.radii[key] = clamp(settings.radii[key], 0.002, maxRadius, DEFAULT_SETTINGS.radii[key]);
+    if (!isCornerMode(settings.cornerModes[key])) settings.cornerModes[key] = 'rounded';
+  }
+  for (const key of Object.keys(DEFAULT_SETTINGS.shapeCornerRadii) as ShapeCornerKey[]) {
+    settings.shapeCornerRadii[key] = clamp(settings.shapeCornerRadii[key], 0.002, maxRadius, DEFAULT_SETTINGS.shapeCornerRadii[key]);
+    if (!isCornerMode(settings.shapeCornerModes[key])) settings.shapeCornerModes[key] = 'rounded';
+  }
 
   settings.touchPoolHeight = atLeast(settings.touchPoolHeight, 0.16, DEFAULT_SETTINGS.touchPoolHeight);
   settings.touchRimHeight = clamp(settings.touchRimHeight, 0.015, Math.max(0.02, settings.touchPoolHeight * 0.42), DEFAULT_SETTINGS.touchRimHeight);
@@ -386,9 +575,7 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
 
   const activeHeight = settings.profile === 'belowFloor'
     ? settings.heightAboveFloor + settings.depthBelowFloor
-    : settings.profile === 'touchPool'
-      ? settings.touchPoolHeight
-      : settings.height;
+    : settings.profile === 'touchPool' ? settings.touchPoolHeight : settings.height;
   const structuralHeight = settings.baseHeight + settings.bottomRimHeight + settings.topRimHeight;
   if (settings.profile !== 'touchPool' && structuralHeight > activeHeight * 0.42) {
     const ratio = (activeHeight * 0.42) / structuralHeight;
@@ -419,31 +606,35 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
 
   settings.tunnelEnabled = Boolean(settings.tunnelEnabled) && tunnelAllowed(settings);
   if (!isTunnelAxis(settings.tunnelAxis)) settings.tunnelAxis = 'depth';
-  const tunnelCrossDimension = settings.tunnelAxis === 'depth' ? settings.width : settings.depth;
-  settings.tunnelWidth = clamp(settings.tunnelWidth, 0.2, Math.max(0.21, tunnelCrossDimension - 0.12), DEFAULT_SETTINGS.tunnelWidth);
-  const tunnelHeightBasis = settings.profile === 'belowFloor' ? settings.heightAboveFloor + 0.35 : settings.height;
-  settings.tunnelWallHeight = clamp(settings.tunnelWallHeight, 0.15, Math.max(0.16, tunnelHeightBasis * 0.82), DEFAULT_SETTINGS.tunnelWallHeight);
+  settings.tunnelWidth = atLeast(settings.tunnelWidth, 0.2, DEFAULT_SETTINGS.tunnelWidth);
+  settings.tunnelWallHeight = atLeast(settings.tunnelWallHeight, 0.15, DEFAULT_SETTINGS.tunnelWallHeight);
   settings.tunnelRoundness = clamp(settings.tunnelRoundness, 0, 4, DEFAULT_SETTINGS.tunnelRoundness);
-  settings.tunnelGlassThickness = clamp(settings.tunnelGlassThickness, 0.005, Math.max(0.006, settings.tunnelWidth * 0.2), DEFAULT_SETTINGS.tunnelGlassThickness);
+  settings.tunnelGlassThickness = atLeast(settings.tunnelGlassThickness, 0.005, DEFAULT_SETTINGS.tunnelGlassThickness);
   settings.tunnelCurveSegments = Math.round(clamp(settings.tunnelCurveSegments, 3, 64, DEFAULT_SETTINGS.tunnelCurveSegments));
   settings.tunnelEndExtension = atLeast(settings.tunnelEndExtension, 0, DEFAULT_SETTINGS.tunnelEndExtension);
-  settings.portalFrameWidth = clamp(settings.portalFrameWidth, 0.005, Math.max(0.006, settings.tunnelWidth * 0.35), DEFAULT_SETTINGS.portalFrameWidth);
+  settings.portalFrameWidth = atLeast(settings.portalFrameWidth, 0.005, DEFAULT_SETTINGS.portalFrameWidth);
   settings.portalFrameDepth = atLeast(settings.portalFrameDepth, 0.005, DEFAULT_SETTINGS.portalFrameDepth);
-  settings.tunnelWaterClearance = clamp(settings.tunnelWaterClearance, 0.001, Math.max(0.002, settings.tunnelWidth * 0.12), DEFAULT_SETTINGS.tunnelWaterClearance);
+  settings.tunnelWaterClearance = atLeast(settings.tunnelWaterClearance, 0.001, DEFAULT_SETTINGS.tunnelWaterClearance);
   settings.tunnelGlassFloor = Boolean(settings.tunnelGlassFloor);
-  settings.tunnelSideRimWidth = clamp(settings.tunnelSideRimWidth, 0.005, Math.max(0.006, settings.tunnelWidth * 0.25), DEFAULT_SETTINGS.tunnelSideRimWidth);
-  settings.tunnelBridgeRimHeight = clamp(settings.tunnelBridgeRimHeight, 0.01, Math.max(0.02, settings.tunnelWallHeight * 0.4), DEFAULT_SETTINGS.tunnelBridgeRimHeight);
+  settings.tunnelSideRimWidth = atLeast(settings.tunnelSideRimWidth, 0.005, DEFAULT_SETTINGS.tunnelSideRimWidth);
+  settings.tunnelBridgeRimHeight = atLeast(settings.tunnelBridgeRimHeight, 0.01, DEFAULT_SETTINGS.tunnelBridgeRimHeight);
   settings.tunnelBridgeSeparatorSpacing = atLeast(settings.tunnelBridgeSeparatorSpacing, 0.15, DEFAULT_SETTINGS.tunnelBridgeSeparatorSpacing);
-  settings.tunnelBridgeSeparatorWidth = clamp(
-    settings.tunnelBridgeSeparatorWidth,
-    0.004,
-    Math.max(0.005, settings.tunnelBridgeSeparatorSpacing * 0.4),
-    DEFAULT_SETTINGS.tunnelBridgeSeparatorWidth,
-  );
-  const tunnelEdgeMargin = settings.glassThickness + settings.portalFrameWidth + settings.tunnelGlassThickness + 0.04;
-  const maxTunnelOffset = Math.max(0, tunnelCrossDimension * 0.5 - settings.tunnelWidth * 0.5 - tunnelEdgeMargin);
-  settings.tunnelOffset = clamp(settings.tunnelOffset, -maxTunnelOffset, maxTunnelOffset, DEFAULT_SETTINGS.tunnelOffset);
+  settings.tunnelBridgeSeparatorWidth = atLeast(settings.tunnelBridgeSeparatorWidth, 0.004, DEFAULT_SETTINGS.tunnelBridgeSeparatorWidth);
+  settings.tunnelOffset = finite(settings.tunnelOffset, 0);
 
+  const rawPassages = Array.isArray(settings.passages) ? settings.passages : [];
+  const usedIds = new Set<string>();
+  settings.passages = rawPassages.slice(0, 12).map((passage, index) => {
+    const normalized = normalizePassage(passage, settings, index);
+    let id = normalized.id;
+    let suffix = 2;
+    while (usedIds.has(id)) id = `${normalized.id}-${suffix++}`;
+    normalized.id = id;
+    usedIds.add(id);
+    return normalized;
+  });
+  if (settings.profile === 'touchPool') settings.tunnelEnabled = false;
+  settings.exportNavigationJson = settings.exportNavigationJson !== false;
   settings.exportScale = atLeast(settings.exportScale, 0.001, DEFAULT_SETTINGS.exportScale);
   return settings;
 }

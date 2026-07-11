@@ -6,7 +6,7 @@ import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aq
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, type AquariumSettings } from './model/settings';
 import { ControlPanel } from './ui/panel';
 
-const STORAGE_KEY = 'aquarium-maker-settings-v8-bridge-water';
+const STORAGE_KEY = 'aquarium-maker-settings-v9-layout-passages-navigation';
 
 type CameraView = 'iso' | 'front' | 'side' | 'top' | 'fit';
 
@@ -39,9 +39,21 @@ function encodeConfiguration(value: AquariumSettings): string {
 }
 
 function mergeSettings(partial: Partial<AquariumSettings>): AquariumSettings {
+  const migrated: Partial<AquariumSettings> = { ...partial };
+  // Keep older v1.7 links and local settings useful after the arm-based layout refactor.
+  if (partial.lVerticalArmWidth === undefined && partial.lArmWidth !== undefined) migrated.lVerticalArmWidth = partial.lArmWidth;
+  if (partial.lVerticalArmLength === undefined && partial.depth !== undefined) migrated.lVerticalArmLength = partial.depth;
+  if (partial.lHorizontalArmWidth === undefined && partial.lRearDepth !== undefined) migrated.lHorizontalArmWidth = partial.lRearDepth;
+  if (partial.lHorizontalArmLength === undefined && partial.width !== undefined) migrated.lHorizontalArmLength = partial.width;
+  if (partial.uLeftArmLength === undefined && partial.depth !== undefined) migrated.uLeftArmLength = partial.depth;
+  if (partial.uRightArmLength === undefined && partial.depth !== undefined) migrated.uRightArmLength = partial.depth;
+  if (partial.uBridgeLength === undefined && partial.width !== undefined) migrated.uBridgeLength = partial.width;
+  if (partial.uBridgeDepth === undefined && partial.uBackDepth !== undefined) migrated.uBridgeDepth = partial.uBackDepth;
+
   return normalizeSettings({
     ...cloneSettings(DEFAULT_SETTINGS),
-    ...partial,
+    ...migrated,
+    passages: Array.isArray(partial.passages) ? partial.passages : [],
     radii: { ...DEFAULT_SETTINGS.radii, ...partial.radii },
     cornerModes: { ...DEFAULT_SETTINGS.cornerModes, ...partial.cornerModes },
     shapeCornerRadii: { ...DEFAULT_SETTINGS.shapeCornerRadii, ...partial.shapeCornerRadii },
@@ -171,8 +183,11 @@ function updateStats(): void {
       ? settings.touchPoolHeight
       : settings.height;
   const profileLabel = settings.profile === 'belowFloor' ? 'below floor' : settings.profile === 'touchPool' ? 'touch pool' : 'standard';
+  const rotated = settings.footprintRotation === 90 || settings.footprintRotation === 270;
+  const displayWidth = rotated ? settings.depth : settings.width;
+  const displayDepth = rotated ? settings.width : settings.depth;
   requireElement<HTMLElement>('#dimension-stat').textContent =
-    `${settings.width.toFixed(1)} × ${settings.depth.toFixed(1)} × ${visibleHeight.toFixed(1)} m · ${profileLabel}`;
+    `${displayWidth.toFixed(1)} × ${displayDepth.toFixed(1)} × ${visibleHeight.toFixed(1)} m · ${profileLabel}`;
   requireElement<HTMLElement>('#triangle-stat').textContent =
     `${currentBuild?.triangles.toLocaleString() ?? '—'} triangles`;
   scaleBadge.textContent = `Preview in meters · export ${Number(settings.exportScale.toFixed(3))}×`;
@@ -290,6 +305,18 @@ function cleanFileName(value: string): string {
   return cleaned || 'aquarium';
 }
 
+function downloadBlob(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+}
+
 async function downloadModel(): Promise<void> {
   if (!modelGroup) {
     showToast('The model is not ready yet');
@@ -304,18 +331,25 @@ async function downloadModel(): Promise<void> {
 
   try {
     const buffer = await exportAquariumGLB(modelGroup, settings.exportScale);
-    const blob = new Blob([buffer], { type: 'model/gltf-binary' });
-    const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
     const fileInput = requireElement<HTMLInputElement>('#file-name');
-    link.href = objectUrl;
-    link.download = `${cleanFileName(fileInput.value)}.glb`;
-    link.hidden = true;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
-    showToast('GLB downloaded');
+    const stem = cleanFileName(fileInput.value);
+    downloadBlob(new Blob([buffer], { type: 'model/gltf-binary' }), `${stem}.glb`);
+
+    if (settings.exportNavigationJson && modelGroup.userData.navigation) {
+      const navigation = {
+        ...modelGroup.userData.navigation,
+        exportUnitsPerMeter: settings.exportScale,
+        exportedBoundsUnits: {
+          width: (settings.footprintRotation === 90 || settings.footprintRotation === 270 ? settings.depth : settings.width) * settings.exportScale,
+          depth: (settings.footprintRotation === 90 || settings.footprintRotation === 270 ? settings.width : settings.depth) * settings.exportScale,
+          height: (settings.profile === 'belowFloor' ? settings.heightAboveFloor + settings.depthBelowFloor : settings.profile === 'touchPool' ? settings.touchPoolHeight : settings.height) * settings.exportScale,
+        },
+      };
+      downloadBlob(new Blob([JSON.stringify(navigation, null, 2)], { type: 'application/json' }), `${stem}.navigation.json`);
+      showToast('GLB and navigation JSON downloaded');
+    } else {
+      showToast('GLB downloaded');
+    }
   } catch (error) {
     console.error('GLB export failed:', error);
     showToast('Could not export the GLB');
@@ -383,6 +417,7 @@ Object.assign(window as unknown as { __aquariumMaker?: unknown }, {
   __aquariumMaker: {
     getSettings: () => JSON.parse(JSON.stringify(settings)) as AquariumSettings,
     getStats: () => ({ triangles: currentBuild?.triangles ?? 0, vertices: currentBuild?.vertices ?? 0 }),
+    getNavigation: () => modelGroup?.userData.navigation ?? null,
     exportCurrent: async () => modelGroup ? exportAquariumGLB(modelGroup, settings.exportScale) : null,
   },
 });

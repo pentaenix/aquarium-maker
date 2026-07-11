@@ -3,7 +3,8 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as polygonClippingModule from 'polygon-clipping';
 import type { MultiPolygon, Polygon as ClipPolygon, Ring } from 'polygon-clipping';
-import type { AquariumSettings, CornerMode, CornerModes, CornerRadii, ShapeCornerKey, TunnelAxis } from './settings';
+import type { AquariumSettings, CornerMode, CornerModes, CornerRadii, PassageSettings, PassageSide, ShapeCornerKey, TunnelAxis } from './settings';
+import { activePassages } from './settings';
 import { createGroundTexture, createWaterTextures } from './textures';
 
 export interface AquariumBuild {
@@ -18,6 +19,10 @@ type PolygonClippingApi = {
     subject: ClipPolygon | MultiPolygon,
     ...clips: Array<ClipPolygon | MultiPolygon>
   ) => MultiPolygon;
+  union: (
+    subject: ClipPolygon | MultiPolygon,
+    ...polygons: Array<ClipPolygon | MultiPolygon>
+  ) => MultiPolygon;
 };
 
 // polygon-clipping is published as CommonJS. Vite exposes named exports while
@@ -26,7 +31,7 @@ const polygonClipping = (
   (polygonClippingModule as unknown as { default?: PolygonClippingApi }).default
   ?? (polygonClippingModule as unknown as PolygonClippingApi)
 );
-const { difference } = polygonClipping;
+const { difference, union } = polygonClipping;
 
 const EPSILON = 1e-6;
 
@@ -205,62 +210,77 @@ function roundedOrthogonalLoop(
   return result;
 }
 
+function transformFootprintPoint(point: THREE.Vector2, settings: AquariumSettings): THREE.Vector2 {
+  const transformed = point.clone();
+  if (settings.footprintMirrored) transformed.x *= -1;
+  const angle = THREE.MathUtils.degToRad(settings.footprintRotation);
+  if (Math.abs(angle) > EPSILON) transformed.rotateAround(new THREE.Vector2(0, 0), -angle);
+  return transformed;
+}
+
+function transformFootprintLoop(loop: THREE.Vector2[], settings: AquariumSettings): THREE.Vector2[] {
+  return loop.map((point) => transformFootprintPoint(point, settings));
+}
+
 function makeLShapeLoop(settings: AquariumSettings, offset: number): THREE.Vector2[] {
-  const width = Math.max(0.8, settings.width + offset * 2);
-  const depth = Math.max(0.8, settings.depth + offset * 2);
+  const width = Math.max(0.8, settings.lHorizontalArmLength + offset * 2);
+  const depth = Math.max(0.8, settings.lVerticalArmLength + offset * 2);
   const left = -width * 0.5;
   const right = width * 0.5;
   const back = -depth * 0.5;
   const front = depth * 0.5;
-  const arm = THREE.MathUtils.clamp(settings.lArmWidth + offset * 2, 0.35, width - 0.35);
-  const rear = THREE.MathUtils.clamp(settings.lRearDepth + offset * 2, 0.35, depth - 0.35);
+  const verticalWidth = THREE.MathUtils.clamp(settings.lVerticalArmWidth + offset * 2, 0.18, width - 0.18);
+  const horizontalWidth = THREE.MathUtils.clamp(settings.lHorizontalArmWidth + offset * 2, 0.18, depth - 0.18);
   const vertices = [
     new THREE.Vector2(left, back),
     new THREE.Vector2(right, back),
-    new THREE.Vector2(right, back + rear),
-    new THREE.Vector2(left + arm, back + rear),
-    new THREE.Vector2(left + arm, front),
+    new THREE.Vector2(right, back + horizontalWidth),
+    new THREE.Vector2(left + verticalWidth, back + horizontalWidth),
+    new THREE.Vector2(left + verticalWidth, front),
     new THREE.Vector2(left, front),
   ];
   const keys: ShapeCornerKey[] = [
     'lBackLeft', 'lBackRight', 'lOuterRight', 'lInnerElbow', 'lFrontRight', 'lFrontLeft',
   ];
-  return roundedOrthogonalLoop(vertices, keys, settings, offset);
+  return transformFootprintLoop(roundedOrthogonalLoop(vertices, keys, settings, offset), settings);
 }
 
 function makeUShapeLoop(settings: AquariumSettings, offset: number): THREE.Vector2[] {
-  const width = Math.max(1.2, settings.width + offset * 2);
-  const depth = Math.max(1.2, settings.depth + offset * 2);
+  const width = Math.max(1.2, settings.uBridgeLength + offset * 2);
+  const leftLength = Math.max(0.5, settings.uLeftArmLength + offset * 2);
+  const rightLength = Math.max(0.5, settings.uRightArmLength + offset * 2);
+  const depth = Math.max(leftLength, rightLength);
   const left = -width * 0.5;
   const right = width * 0.5;
   const back = -depth * 0.5;
-  const front = depth * 0.5;
   let leftArm = settings.uLeftArmWidth + offset * 2;
   let rightArm = settings.uRightArmWidth + offset * 2;
-  const maxArmTotal = width - 0.45;
+  const maxArmTotal = width - 0.3;
   if (leftArm + rightArm > maxArmTotal) {
     const scale = maxArmTotal / Math.max(leftArm + rightArm, EPSILON);
     leftArm *= scale;
     rightArm *= scale;
   }
-  leftArm = THREE.MathUtils.clamp(leftArm, 0.25, width * 0.48);
-  rightArm = THREE.MathUtils.clamp(rightArm, 0.25, width * 0.48);
-  const bridge = THREE.MathUtils.clamp(settings.uBackDepth + offset * 2, 0.3, depth - 0.3);
+  leftArm = THREE.MathUtils.clamp(leftArm, 0.15, width * 0.48);
+  rightArm = THREE.MathUtils.clamp(rightArm, 0.15, width * 0.48);
+  const bridge = THREE.MathUtils.clamp(settings.uBridgeDepth + offset * 2, 0.15, Math.min(leftLength, rightLength) - 0.12);
+  const leftFront = back + leftLength;
+  const rightFront = back + rightLength;
   const vertices = [
     new THREE.Vector2(left, back),
     new THREE.Vector2(right, back),
-    new THREE.Vector2(right, front),
-    new THREE.Vector2(right - rightArm, front),
+    new THREE.Vector2(right, rightFront),
+    new THREE.Vector2(right - rightArm, rightFront),
     new THREE.Vector2(right - rightArm, back + bridge),
     new THREE.Vector2(left + leftArm, back + bridge),
-    new THREE.Vector2(left + leftArm, front),
-    new THREE.Vector2(left, front),
+    new THREE.Vector2(left + leftArm, leftFront),
+    new THREE.Vector2(left, leftFront),
   ];
   const keys: ShapeCornerKey[] = [
     'uBackLeft', 'uBackRight', 'uFrontRight', 'uMouthRight',
     'uInnerRight', 'uInnerLeft', 'uMouthLeft', 'uFrontLeft',
   ];
-  return roundedOrthogonalLoop(vertices, keys, settings, offset);
+  return transformFootprintLoop(roundedOrthogonalLoop(vertices, keys, settings, offset), settings);
 }
 
 export function createFootprintShapeLoop(settings: AquariumSettings, offset = 0): THREE.Vector2[] {
@@ -762,111 +782,10 @@ function selectTunnelSpan(localLoop: THREE.Vector2[], halfWidth: number): Tunnel
   return selected;
 }
 
-function localCorridorPolygon(axis: TunnelAxis, offset: number, halfWidth: number, span: TunnelSpan): ClipPolygon {
-  if (axis === 'depth') {
-    return rectanglePolygon(offset - halfWidth, span.exit, offset + halfWidth, span.entrance);
-  }
-  return rectanglePolygon(-span.entrance, offset - halfWidth, -span.exit, offset + halfWidth);
-}
-
-function isCorridorBoundaryEdge(
-  a: [number, number],
-  b: [number, number],
-  axis: TunnelAxis,
-  offset: number,
-  halfWidth: number,
-  span: TunnelSpan,
-): boolean {
-  const localA = toTunnelLocalPoint(new THREE.Vector2(a[0], a[1]), axis, offset);
-  const localB = toTunnelLocalPoint(new THREE.Vector2(b[0], b[1]), axis, offset);
-  const onSide = (
-    Math.abs(Math.abs(localA.x) - halfWidth) < 1e-4
-    && Math.abs(Math.abs(localB.x) - halfWidth) < 1e-4
-    && Math.min(localA.y, localB.y) >= span.exit - 1e-4
-    && Math.max(localA.y, localB.y) <= span.entrance + 1e-4
-  );
-  const onEnd = (
-    (Math.abs(localA.y - span.exit) < 1e-4 && Math.abs(localB.y - span.exit) < 1e-4)
-    || (Math.abs(localA.y - span.entrance) < 1e-4 && Math.abs(localB.y - span.entrance) < 1e-4)
-  ) && Math.max(Math.abs(localA.x), Math.abs(localB.x)) <= halfWidth + 1e-4;
-  return onSide || onEnd;
-}
-
 function containingInterval(intervals: TunnelSpan[], coordinate: number): TunnelSpan {
   return intervals.find((interval) => coordinate >= interval.exit - 1e-5 && coordinate <= interval.entrance + 1e-5)
     ?? intervals.sort((a, b) => (b.entrance - b.exit) - (a.entrance - a.exit))[0]
     ?? { exit: -1, entrance: 1 };
-}
-
-function makeGenericWaterVolumeWithTunnel(
-  localWaterLoop: THREE.Vector2[],
-  yBottom: number,
-  yTop: number,
-  voidProfile: THREE.Vector2[],
-  voidRoof: THREE.Vector2[],
-  halfWidth: number,
-  span: TunnelSpan,
-): THREE.BufferGeometry {
-  const cutRegion = difference(loopPolygon(localWaterLoop), rectanglePolygon(-halfWidth, span.exit, halfWidth, span.entrance));
-  const geometry = makePolygonPrism(
-    cutRegion,
-    yBottom,
-    yTop,
-    false,
-    {
-      includeTop: false,
-      includeBottom: true,
-      skipSide: (a, b) => isCorridorBoundaryEdge(a, b, 'depth', 0, halfWidth, span),
-    },
-  );
-  const positions = Array.from((geometry.getAttribute('position') as THREE.BufferAttribute).array as ArrayLike<number>);
-  const indices = geometry.index ? Array.from(geometry.index.array as ArrayLike<number>) : [];
-  geometry.dispose();
-
-  for (let index = 0; index < voidProfile.length - 1; index += 1) {
-    const a = voidProfile[index]!;
-    const b = voidProfile[index + 1]!;
-    const tangent = b.clone().sub(a);
-    const inward = new THREE.Vector3(tangent.y, -tangent.x, 0).normalize();
-    appendOrientedQuad(positions, indices, [
-      new THREE.Vector3(a.x, a.y, span.exit), new THREE.Vector3(a.x, a.y, span.entrance),
-      new THREE.Vector3(b.x, b.y, span.entrance), new THREE.Vector3(b.x, b.y, span.exit),
-    ], inward);
-  }
-
-  const addEnd = (s: number, outward: number) => {
-    const sampleS = s + (outward > 0 ? -0.002 : 0.002);
-    const cross = containingInterval(lineIntervalsAtLocalX(
-      localWaterLoop.map((point) => new THREE.Vector2(point.y, point.x)),
-      sampleS,
-    ), 0);
-    const xMin = cross.exit;
-    const xMax = cross.entrance;
-    const normal = new THREE.Vector3(0, 0, outward);
-    if (-halfWidth > xMin + EPSILON) {
-      appendOrientedQuad(positions, indices, [
-        new THREE.Vector3(xMin, yBottom, s), new THREE.Vector3(-halfWidth, yBottom, s),
-        new THREE.Vector3(-halfWidth, yTop, s), new THREE.Vector3(xMin, yTop, s),
-      ], normal);
-    }
-    if (xMax > halfWidth + EPSILON) {
-      appendOrientedQuad(positions, indices, [
-        new THREE.Vector3(halfWidth, yBottom, s), new THREE.Vector3(xMax, yBottom, s),
-        new THREE.Vector3(xMax, yTop, s), new THREE.Vector3(halfWidth, yTop, s),
-      ], normal);
-    }
-    for (let index = 0; index < voidRoof.length - 1; index += 1) {
-      const a = voidRoof[index]!;
-      const b = voidRoof[index + 1]!;
-      appendOrientedQuad(positions, indices, [
-        new THREE.Vector3(a.x, a.y, s), new THREE.Vector3(b.x, b.y, s),
-        new THREE.Vector3(b.x, yTop, s), new THREE.Vector3(a.x, yTop, s),
-      ], normal);
-    }
-  };
-  addEnd(span.entrance, 1);
-  addEnd(span.exit, -1);
-  return finishGeometry(positions, indices);
 }
 
 function makeProfileShell(
@@ -1003,6 +922,633 @@ function makeEndWallWithPortal(
   return merged;
 }
 
+
+interface PassageSegment {
+  a: THREE.Vector2;
+  b: THREE.Vector2;
+  axis: TunnelAxis;
+  offset: number;
+  startS: number;
+  endS: number;
+  touchesBendAtStart: boolean;
+  touchesBendAtEnd: boolean;
+}
+
+interface PassagePortal {
+  side: PassageSide;
+  point: THREE.Vector2;
+  axis: TunnelAxis;
+  offset: number;
+  coordinate: number;
+  outwardSign: number;
+  label: 'entrance' | 'exit';
+}
+
+interface ResolvedPassage {
+  settings: PassageSettings;
+  segments: PassageSegment[];
+  portals: PassagePortal[];
+  bend?: THREE.Vector2;
+  cutRects: Array<{ x0: number; z0: number; x1: number; z1: number }>;
+  cutPolygon: MultiPolygon;
+  voidPolygon: MultiPolygon;
+  floorPolygon: MultiPolygon;
+  crown: number;
+  voidBottom: number;
+  bridgeFloorThickness: number;
+}
+
+function sideAxis(side: PassageSide): TunnelAxis {
+  return side === 'front' || side === 'back' ? 'depth' : 'width';
+}
+
+function sideOutwardSign(side: PassageSide): number {
+  // In tunnel-local longitudinal coordinates front and left are positive.
+  return side === 'front' || side === 'left' ? 1 : -1;
+}
+
+function localToWorld(localX: number, localS: number, axis: TunnelAxis, offset: number): THREE.Vector2 {
+  return axis === 'depth'
+    ? new THREE.Vector2(localX + offset, localS)
+    : new THREE.Vector2(-localS, localX + offset);
+}
+
+function boundaryForSide(
+  loop: THREE.Vector2[],
+  side: PassageSide,
+  offset: number,
+  halfWidth: number,
+): PassagePortal {
+  const axis = sideAxis(side);
+  const local = toTunnelLocalLoop(loop, axis, offset);
+  const span = selectTunnelSpan(local, halfWidth);
+  const outwardSign = sideOutwardSign(side);
+  const coordinate = outwardSign > 0 ? span.entrance : span.exit;
+  return {
+    side,
+    point: localToWorld(0, coordinate, axis, offset),
+    axis,
+    offset,
+    coordinate,
+    outwardSign,
+    label: 'entrance',
+  };
+}
+
+function segmentFromPoints(a: THREE.Vector2, b: THREE.Vector2): PassageSegment {
+  const delta = b.clone().sub(a);
+  if (Math.abs(delta.x) < 1e-5) {
+    return {
+      a: a.clone(), b: b.clone(), axis: 'depth', offset: (a.x + b.x) * 0.5,
+      startS: a.y, endS: b.y, touchesBendAtStart: false, touchesBendAtEnd: false,
+    };
+  }
+  if (Math.abs(delta.y) < 1e-5) {
+    return {
+      a: a.clone(), b: b.clone(), axis: 'width', offset: (a.y + b.y) * 0.5,
+      startS: -a.x, endS: -b.x, touchesBendAtStart: false, touchesBendAtEnd: false,
+    };
+  }
+  throw new Error('Passage segments must be axis aligned.');
+}
+
+function inwardDirection(side: PassageSide): THREE.Vector2 {
+  if (side === 'front') return new THREE.Vector2(0, -1);
+  if (side === 'back') return new THREE.Vector2(0, 1);
+  if (side === 'left') return new THREE.Vector2(1, 0);
+  return new THREE.Vector2(-1, 0);
+}
+
+function segmentRect(
+  segment: PassageSegment,
+  halfWidth: number,
+  extendStart = 0,
+  extendEnd = 0,
+): { polygon: ClipPolygon; bounds: { x0: number; z0: number; x1: number; z1: number } } {
+  const a = segment.a.clone();
+  const b = segment.b.clone();
+  const direction = b.clone().sub(a).normalize();
+  a.addScaledVector(direction, -extendStart);
+  b.addScaledVector(direction, extendEnd);
+  const x0 = Math.min(a.x, b.x) - (segment.axis === 'depth' ? halfWidth : 0);
+  const x1 = Math.max(a.x, b.x) + (segment.axis === 'depth' ? halfWidth : 0);
+  const z0 = Math.min(a.y, b.y) - (segment.axis === 'width' ? halfWidth : 0);
+  const z1 = Math.max(a.y, b.y) + (segment.axis === 'width' ? halfWidth : 0);
+  return { polygon: rectanglePolygon(x0, z0, x1, z1), bounds: { x0, z0, x1, z1 } };
+}
+
+function unionClipPolygons(polygons: Array<ClipPolygon | MultiPolygon>): MultiPolygon {
+  if (polygons.length === 0) return [];
+  if (polygons.length === 1) {
+    const first = polygons[0]!;
+    return (Array.isArray(first[0]?.[0]?.[0]) ? first : [first]) as MultiPolygon;
+  }
+  return union(polygons[0]!, ...polygons.slice(1));
+}
+
+function routePolygon(
+  segments: PassageSegment[],
+  bend: THREE.Vector2 | undefined,
+  halfWidth: number,
+  portalExtensions: Array<{ segmentIndex: number; start: number; end: number }> = [],
+): { multi: MultiPolygon; rects: Array<{ x0: number; z0: number; x1: number; z1: number }> } {
+  const polygons: ClipPolygon[] = [];
+  const rects: Array<{ x0: number; z0: number; x1: number; z1: number }> = [];
+  segments.forEach((segment, index) => {
+    const extension = portalExtensions.find((item) => item.segmentIndex === index);
+    const result = segmentRect(segment, halfWidth, extension?.start ?? 0, extension?.end ?? 0);
+    polygons.push(result.polygon);
+    rects.push(result.bounds);
+  });
+  if (bend) {
+    const bounds = { x0: bend.x - halfWidth, z0: bend.y - halfWidth, x1: bend.x + halfWidth, z1: bend.y + halfWidth };
+    polygons.push(rectanglePolygon(bounds.x0, bounds.z0, bounds.x1, bounds.z1));
+    rects.push(bounds);
+  }
+  return { multi: unionClipPolygons(polygons), rects };
+}
+
+function pointInsideWithClearance(point: THREE.Vector2, loop: THREE.Vector2[], halfWidth: number): boolean {
+  if (!pointInVectorLoop(point, loop)) return false;
+  const checks = [
+    new THREE.Vector2(halfWidth, 0), new THREE.Vector2(-halfWidth, 0),
+    new THREE.Vector2(0, halfWidth), new THREE.Vector2(0, -halfWidth),
+  ];
+  return checks.every((offset) => pointInVectorLoop(point.clone().add(offset), loop));
+}
+
+function validateRouteInside(segments: PassageSegment[], loop: THREE.Vector2[], halfWidth: number): void {
+  for (const segment of segments) {
+    const lateral = segment.axis === 'depth' ? new THREE.Vector2(halfWidth, 0) : new THREE.Vector2(0, halfWidth);
+    for (let step = 1; step < 10; step += 1) {
+      const point = segment.a.clone().lerp(segment.b, step / 10);
+      const valid = pointInVectorLoop(point, loop)
+        && pointInVectorLoop(point.clone().add(lateral), loop)
+        && pointInVectorLoop(point.clone().sub(lateral), loop);
+      if (!valid) {
+        throw new Error('Move or narrow this passage so its complete route stays inside a continuous part of the tank.');
+      }
+    }
+  }
+}
+
+function resolvePassage(
+  passage: PassageSettings,
+  footprintLoop: THREE.Vector2[],
+  waterTop: number,
+  waterBottom: number,
+  belowFloor: boolean,
+): ResolvedPassage {
+  const innerHalf = passage.width * 0.5;
+  const outerHalf = innerHalf + passage.glassThickness;
+  const cutHalf = outerHalf + passage.portalFrameWidth;
+  const voidHalf = outerHalf + passage.waterClearance;
+  const maximumCrown = Math.max(0.42, waterTop - passage.glassThickness - 0.16);
+  const squareRoof = passage.roundness <= 0.015;
+  const wallHeight = Math.min(passage.wallHeight, squareRoof ? maximumCrown : Math.max(0.15, maximumCrown - 0.12));
+  const rise = squareRoof ? 0 : Math.max(0.06, Math.min(innerHalf * passage.roundness, maximumCrown - wallHeight));
+  const crown = wallHeight + rise + passage.glassThickness;
+  const bridgeFloorThickness = Math.max(0.018, passage.glassThickness * 0.55);
+  const voidBottom = belowFloor && passage.glassFloor ? -bridgeFloorThickness - passage.waterClearance : waterBottom;
+
+  const entry = boundaryForSide(footprintLoop, passage.entrySide, passage.entryOffset, cutHalf);
+  entry.label = 'entrance';
+  const portals: PassagePortal[] = [entry];
+  const segments: PassageSegment[] = [];
+  let bend: THREE.Vector2 | undefined;
+
+  if (passage.kind === 'alcove') {
+    const interiorStart = entry.point.clone().addScaledVector(inwardDirection(passage.entrySide), 0.025);
+    const end = interiorStart.clone().addScaledVector(inwardDirection(passage.entrySide), passage.alcoveDepth);
+    const segment = segmentFromPoints(interiorStart, end);
+    segments.push(segment);
+    validateRouteInside(segments, footprintLoop, voidHalf);
+  } else if (passage.route === 'straight') {
+    const exit = boundaryForSide(footprintLoop, passage.exitSide, passage.entryOffset, cutHalf);
+    exit.label = 'exit';
+    portals.push(exit);
+    const segment = segmentFromPoints(entry.point, exit.point);
+    segments.push(segment);
+    validateRouteInside(segments, footprintLoop, voidHalf);
+  } else {
+    const exit = boundaryForSide(footprintLoop, passage.exitSide, passage.exitOffset, cutHalf);
+    exit.label = 'exit';
+    portals.push(exit);
+    if (sideAxis(passage.entrySide) === 'depth') bend = new THREE.Vector2(passage.entryOffset, passage.exitOffset);
+    else bend = new THREE.Vector2(passage.exitOffset, passage.entryOffset);
+    if (!pointInsideWithClearance(bend, footprintLoop, voidHalf)) {
+      throw new Error('The L-tunnel bend is outside the tank. Move either entrance offset toward a solid arm.');
+    }
+    const first = segmentFromPoints(entry.point, bend);
+    first.touchesBendAtEnd = true;
+    const second = segmentFromPoints(bend, exit.point);
+    second.touchesBendAtStart = true;
+    segments.push(first, second);
+    validateRouteInside(segments, footprintLoop, voidHalf);
+  }
+
+  const portalExtension = passage.endExtension + passage.portalFrameDepth + 0.03;
+  const extensions: Array<{ segmentIndex: number; start: number; end: number }> = [];
+  if (segments.length > 0) {
+    const first = segments[0]!;
+    const firstStartsAtEntry = first.a.distanceTo(entry.point) < first.b.distanceTo(entry.point);
+    extensions.push({ segmentIndex: 0, start: firstStartsAtEntry ? portalExtension : 0, end: firstStartsAtEntry ? 0 : portalExtension });
+    if (passage.kind === 'tunnel') {
+      const lastIndex = segments.length - 1;
+      const last = segments[lastIndex]!;
+      const exit = portals[1]!;
+      const exitAtEnd = last.b.distanceTo(exit.point) < last.a.distanceTo(exit.point);
+      const existing = extensions.find((item) => item.segmentIndex === lastIndex);
+      if (existing) {
+        if (exitAtEnd) existing.end = portalExtension;
+        else existing.start = portalExtension;
+      } else extensions.push({ segmentIndex: lastIndex, start: exitAtEnd ? 0 : portalExtension, end: exitAtEnd ? portalExtension : 0 });
+    }
+  }
+  const cut = routePolygon(segments, bend, cutHalf, extensions);
+  const dry = routePolygon(segments, bend, voidHalf);
+  const floor = routePolygon(segments, bend, innerHalf);
+  return {
+    settings: passage,
+    segments,
+    portals,
+    bend,
+    cutRects: cut.rects,
+    cutPolygon: cut.multi,
+    voidPolygon: dry.multi,
+    floorPolygon: floor.multi,
+    crown,
+    voidBottom,
+    bridgeFloorThickness,
+  };
+}
+
+function corridorBoundaryEdge(
+  a: [number, number],
+  b: [number, number],
+  rects: Array<{ x0: number; z0: number; x1: number; z1: number }>,
+): boolean {
+  const tolerance = 2e-4;
+  return rects.some((rect) => {
+    const vertical = Math.abs(a[0] - b[0]) < tolerance
+      && (Math.abs(a[0] - rect.x0) < tolerance || Math.abs(a[0] - rect.x1) < tolerance)
+      && Math.min(a[1], b[1]) >= rect.z0 - tolerance
+      && Math.max(a[1], b[1]) <= rect.z1 + tolerance;
+    const horizontal = Math.abs(a[1] - b[1]) < tolerance
+      && (Math.abs(a[1] - rect.z0) < tolerance || Math.abs(a[1] - rect.z1) < tolerance)
+      && Math.min(a[0], b[0]) >= rect.x0 - tolerance
+      && Math.max(a[0], b[0]) <= rect.x1 + tolerance;
+    return vertical || horizontal;
+  });
+}
+
+function passageProfile(passage: PassageSettings, waterTop: number): {
+  inner: ArchProfile;
+  outer: ArchProfile;
+  frame: ArchProfile;
+  crown: number;
+  outerHalf: number;
+  frameHalf: number;
+} {
+  const innerHalf = passage.width * 0.5;
+  const maximumCrown = Math.max(0.42, waterTop - passage.glassThickness - 0.16);
+  const square = passage.roundness <= 0.015;
+  const wallHeight = Math.min(passage.wallHeight, square ? maximumCrown : Math.max(0.15, maximumCrown - 0.12));
+  const rise = square ? 0 : Math.max(0.06, Math.min(innerHalf * passage.roundness, maximumCrown - wallHeight));
+  const inner = archProfile(innerHalf, 0, wallHeight, rise, passage.curveSegments);
+  const outerHalf = innerHalf + passage.glassThickness;
+  const outer = square
+    ? archProfile(outerHalf, 0, wallHeight + passage.glassThickness, 0, passage.curveSegments)
+    : archProfile(outerHalf, 0, wallHeight, rise + passage.glassThickness, passage.curveSegments);
+  const frameHalf = outerHalf + passage.portalFrameWidth;
+  const frame = square
+    ? archProfile(frameHalf, 0, wallHeight + passage.glassThickness + passage.portalFrameWidth, 0, passage.curveSegments)
+    : archProfile(frameHalf, 0, wallHeight, rise + passage.glassThickness + passage.portalFrameWidth, passage.curveSegments);
+  return { inner, outer, frame, crown: wallHeight + rise + passage.glassThickness, outerHalf, frameHalf };
+}
+
+function trimSegmentForBend(segment: PassageSegment, amount: number): PassageSegment {
+  const clone: PassageSegment = {
+    ...segment,
+    a: segment.a.clone(),
+    b: segment.b.clone(),
+  };
+  const direction = clone.b.clone().sub(clone.a).normalize();
+  if (clone.touchesBendAtStart) clone.a.addScaledVector(direction, amount);
+  if (clone.touchesBendAtEnd) clone.b.addScaledVector(direction, -amount);
+  clone.startS = clone.axis === 'depth' ? clone.a.y : -clone.a.x;
+  clone.endS = clone.axis === 'depth' ? clone.b.y : -clone.b.x;
+  return clone;
+}
+
+function makeProfileEndCap(profile: THREE.Vector2[], s0: number, s1: number): THREE.BufferGeometry {
+  const shape = new THREE.Shape(profile);
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: Math.abs(s1 - s0), bevelEnabled: false, steps: 1 });
+  geometry.deleteAttribute('uv');
+  geometry.translate(0, 0, Math.min(s0, s1));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function makeElbowChamber(
+  bend: THREE.Vector2,
+  passage: PassageSettings,
+  crown: number,
+  entrySide: PassageSide,
+  exitSide: PassageSide,
+): THREE.BufferGeometry[] {
+  const outerHalf = passage.width * 0.5 + passage.glassThickness;
+  const thickness = passage.glassThickness;
+  const pieces: THREE.BufferGeometry[] = [];
+  pieces.push(makeBoxGeometry(outerHalf * 2, thickness, outerHalf * 2, bend.x, crown - thickness * 0.5, bend.y));
+  const blockedSides: PassageSide[] = (['front', 'back', 'left', 'right'] as PassageSide[])
+    .filter((side) => side !== entrySide && side !== exitSide);
+  for (const side of blockedSides) {
+    if (side === 'front' || side === 'back') {
+      pieces.push(makeBoxGeometry(outerHalf * 2, crown, thickness, bend.x, crown * 0.5, bend.y + (side === 'front' ? outerHalf - thickness * 0.5 : -outerHalf + thickness * 0.5)));
+    } else {
+      pieces.push(makeBoxGeometry(thickness, crown, outerHalf * 2, bend.x + (side === 'right' ? outerHalf - thickness * 0.5 : -outerHalf + thickness * 0.5), crown * 0.5, bend.y));
+    }
+  }
+  return pieces;
+}
+
+function portalWallGeometry(
+  portal: PassagePortal,
+  passage: PassageSettings,
+  glassOuter: THREE.Vector2[],
+  glassInner: THREE.Vector2[],
+  glassBottom: number,
+  glassTop: number,
+  waterTop: number,
+): THREE.BufferGeometry {
+  const profile = passageProfile(passage, waterTop);
+  const outerLocal = toTunnelLocalLoop(glassOuter, portal.axis, portal.offset);
+  const innerLocal = toTunnelLocalLoop(glassInner, portal.axis, portal.offset);
+  const outerSpan = selectTunnelSpan(outerLocal, profile.frameHalf);
+  const innerSpan = selectTunnelSpan(innerLocal, profile.outerHalf);
+  const outerCoordinate = portal.outwardSign > 0 ? outerSpan.entrance : outerSpan.exit;
+  const innerCoordinate = portal.outwardSign > 0 ? innerSpan.entrance : innerSpan.exit;
+  const sampleS = outerCoordinate - portal.outwardSign * 0.002;
+  const swapped = outerLocal.map((point) => new THREE.Vector2(point.y, point.x));
+  const cross = containingInterval(lineIntervalsAtLocalX(swapped, sampleS), 0);
+  return orientTunnelGeometry(
+    makeEndWallWithPortal(
+      cross.exit,
+      cross.entrance,
+      innerCoordinate,
+      outerCoordinate,
+      glassBottom,
+      glassTop,
+      profile.outerHalf,
+      profile.outer.roof,
+    ),
+    portal.axis,
+    portal.offset,
+  );
+}
+
+function portalFrameGeometry(
+  portal: PassagePortal,
+  passage: PassageSettings,
+  waterTop: number,
+): THREE.BufferGeometry {
+  const profile = passageProfile(passage, waterTop);
+  const outer = portal.coordinate + portal.outwardSign * passage.endExtension;
+  const inner = outer - portal.outwardSign * passage.portalFrameDepth;
+  return orientTunnelGeometry(
+    makeProfileShell(profile.outer.full, profile.frame.full, outer, inner, true, true),
+    portal.axis,
+    portal.offset,
+  );
+}
+
+function makePassageShellGeometries(resolved: ResolvedPassage, waterTop: number): THREE.BufferGeometry[] {
+  const passage = resolved.settings;
+  const profile = passageProfile(passage, waterTop);
+  const pieces: THREE.BufferGeometry[] = [];
+  const trim = resolved.bend ? profile.outerHalf * 0.72 : 0;
+  for (const original of resolved.segments) {
+    const segment = trim > 0 ? trimSegmentForBend(original, trim) : original;
+    const geometry = makeProfileShell(profile.inner.full, profile.outer.full, segment.startS, segment.endS, false, false);
+    pieces.push(orientTunnelGeometry(geometry, segment.axis, segment.offset));
+  }
+  if (resolved.bend) pieces.push(...makeElbowChamber(resolved.bend, passage, profile.crown, passage.entrySide, passage.exitSide));
+  if (passage.kind === 'alcove') {
+    const final = resolved.segments[resolved.segments.length - 1]!;
+    const endpoint = final.b;
+    const coordinate = final.axis === 'depth' ? endpoint.y : -endpoint.x;
+    const cap = makeProfileEndCap(profile.outer.full, coordinate - passage.glassThickness * 0.5, coordinate + passage.glassThickness * 0.5);
+    pieces.push(orientTunnelGeometry(cap, final.axis, final.offset));
+  }
+  return pieces;
+}
+
+function makeBridgeGeometries(resolved: ResolvedPassage): {
+  floor: THREE.BufferGeometry;
+  rims: THREE.BufferGeometry[];
+  separators: THREE.BufferGeometry[];
+} {
+  const passage = resolved.settings;
+  const floor = makePolygonPrism(resolved.floorPolygon, -resolved.bridgeFloorThickness, 0);
+  const rims: THREE.BufferGeometry[] = [];
+  const separators: THREE.BufferGeometry[] = [];
+  const half = passage.width * 0.5;
+  for (const segment of resolved.segments) {
+    const length = segment.a.distanceTo(segment.b);
+    const centerS = (segment.startS + segment.endS) * 0.5;
+    const rimWidth = passage.sideRimWidth;
+    const rimHeight = passage.bridgeRimHeight;
+    rims.push(orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, length, -half - rimWidth * 0.5, rimHeight * 0.5, centerS), segment.axis, segment.offset));
+    rims.push(orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, length, half + rimWidth * 0.5, rimHeight * 0.5, centerS), segment.axis, segment.offset));
+    const count = Math.max(0, Math.floor((length - passage.separatorSpacing * 0.35) / passage.separatorSpacing));
+    const low = Math.min(segment.startS, segment.endS);
+    for (let index = 1; index <= count; index += 1) {
+      const s = low + (length * index) / (count + 1);
+      separators.push(orientTunnelGeometry(
+        makeBoxGeometry(passage.width + rimWidth * 2, Math.max(0.008, rimHeight * 0.16), passage.separatorWidth, 0, Math.max(0.004, rimHeight * 0.08), s),
+        segment.axis,
+        segment.offset,
+      ));
+    }
+  }
+  return { floor, rims, separators };
+}
+
+function makeLayeredWaterVolume(
+  waterRegion: MultiPolygon,
+  waterBottom: number,
+  waterTop: number,
+  passages: ResolvedPassage[],
+): THREE.BufferGeometry {
+  const levels = [waterBottom, waterTop];
+  for (const passage of passages) {
+    levels.push(Math.max(waterBottom, passage.voidBottom));
+    levels.push(Math.min(waterTop, passage.crown + passage.settings.waterClearance));
+  }
+  const sorted = [...new Set(levels.map((value) => Number(value.toFixed(6))))].sort((a, b) => a - b);
+  const slabs: THREE.BufferGeometry[] = [];
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const bottom = sorted[index]!;
+    const top = sorted[index + 1]!;
+    if (top - bottom < 1e-5) continue;
+    const middle = (bottom + top) * 0.5;
+    const active = passages.filter((passage) => middle > passage.voidBottom + 1e-5 && middle < passage.crown + passage.settings.waterClearance - 1e-5);
+    const region = active.length > 0
+      ? difference(waterRegion, ...active.map((passage) => passage.voidPolygon))
+      : waterRegion;
+    if (region.length === 0) continue;
+    slabs.push(makePolygonPrism(region, bottom, top, false, { includeBottom: false, includeTop: false }));
+  }
+  if (slabs.length === 0) return makePolygonPrism(waterRegion, waterBottom, waterTop, false, { includeTop: false });
+  const merged = mergeGeometries(slabs, false);
+  for (const slab of slabs) if (slab !== merged) slab.dispose();
+  if (!merged) throw new Error('Could not build the layered water volume.');
+  return merged;
+}
+
+function polygonArea(loop: THREE.Vector2[]): number {
+  let area = 0;
+  for (let index = 0; index < loop.length; index += 1) {
+    const a = loop[index]!;
+    const b = loop[(index + 1) % loop.length]!;
+    area += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(area) * 0.5;
+}
+
+function navigationRegions(settings: AquariumSettings, yBottom: number, yTop: number): Array<Record<string, unknown>> {
+  const transform = (points: THREE.Vector2[]) => points.map((point) => transformFootprintPoint(point, settings));
+  if (settings.footprint === 'rectangle') {
+    const loop = createFootprintShapeLoop(settings, -(settings.glassThickness + settings.waterWallGap));
+    return [{ id: 'main', label: 'Main water region', polygon: loop.map((point) => [point.x, point.y]), yBottom, yTop }];
+  }
+  if (settings.footprint === 'lShape') {
+    const w = settings.lHorizontalArmLength;
+    const d = settings.lVerticalArmLength;
+    const left = -w * 0.5;
+    const back = -d * 0.5;
+    const v = settings.lVerticalArmWidth;
+    const h = settings.lHorizontalArmWidth;
+    return [
+      { id: 'vertical-arm', label: 'Vertical arm', polygon: transform([new THREE.Vector2(left, back), new THREE.Vector2(left + v, back), new THREE.Vector2(left + v, back + d), new THREE.Vector2(left, back + d)]).map((p) => [p.x, p.y]), yBottom, yTop },
+      { id: 'horizontal-arm', label: 'Horizontal arm', polygon: transform([new THREE.Vector2(left, back), new THREE.Vector2(left + w, back), new THREE.Vector2(left + w, back + h), new THREE.Vector2(left, back + h)]).map((p) => [p.x, p.y]), yBottom, yTop },
+      { id: 'elbow', label: 'Arm overlap', polygon: transform([new THREE.Vector2(left, back), new THREE.Vector2(left + v, back), new THREE.Vector2(left + v, back + h), new THREE.Vector2(left, back + h)]).map((p) => [p.x, p.y]), yBottom, yTop },
+    ];
+  }
+  const w = settings.uBridgeLength;
+  const d = Math.max(settings.uLeftArmLength, settings.uRightArmLength);
+  const left = -w * 0.5;
+  const right = w * 0.5;
+  const back = -d * 0.5;
+  const bridge = settings.uBridgeDepth;
+  return [
+    { id: 'left-arm', label: 'Left arm', polygon: transform([new THREE.Vector2(left, back), new THREE.Vector2(left + settings.uLeftArmWidth, back), new THREE.Vector2(left + settings.uLeftArmWidth, back + settings.uLeftArmLength), new THREE.Vector2(left, back + settings.uLeftArmLength)]).map((p) => [p.x, p.y]), yBottom, yTop },
+    { id: 'right-arm', label: 'Right arm', polygon: transform([new THREE.Vector2(right - settings.uRightArmWidth, back), new THREE.Vector2(right, back), new THREE.Vector2(right, back + settings.uRightArmLength), new THREE.Vector2(right - settings.uRightArmWidth, back + settings.uRightArmLength)]).map((p) => [p.x, p.y]), yBottom, yTop },
+    { id: 'rear-bridge', label: 'Rear connector', polygon: transform([new THREE.Vector2(left, back), new THREE.Vector2(right, back), new THREE.Vector2(right, back + bridge), new THREE.Vector2(left, back + bridge)]).map((p) => [p.x, p.y]), yBottom, yTop },
+  ];
+}
+
+function buildNavigationMetadata(
+  group: THREE.Group,
+  settings: AquariumSettings,
+  waterLoop: THREE.Vector2[],
+  waterBottom: number,
+  waterTop: number,
+  passages: ResolvedPassage[],
+): Record<string, unknown> {
+  const box = new THREE.Box2().setFromPoints(waterLoop);
+  const area = polygonArea(waterLoop);
+  const depth = Math.max(0, waterTop - waterBottom);
+  const passageVoidVolume = passages.reduce((sum, passage) => {
+    const routeArea = passage.voidPolygon.reduce((polygonSum, polygon) => polygonSum + Math.abs(ringArea(cleanRing(polygon[0]!))), 0);
+    return sum + routeArea * Math.max(0, Math.min(waterTop, passage.crown) - Math.max(waterBottom, passage.voidBottom));
+  }, 0);
+  const regions = navigationRegions(settings, waterBottom, waterTop);
+  const portals: Array<Record<string, unknown>> = [];
+  const middleY = (waterBottom + waterTop) * 0.5;
+  if (settings.footprint === 'lShape') {
+    const left = -settings.lHorizontalArmLength * 0.5;
+    const back = -settings.lVerticalArmLength * 0.5;
+    const overlapCenter = transformFootprintPoint(new THREE.Vector2(
+      left + settings.lVerticalArmWidth * 0.5,
+      back + settings.lHorizontalArmWidth * 0.5,
+    ), settings);
+    portals.push({
+      id: 'vertical-to-horizontal', from: 'vertical-arm', to: 'horizontal-arm',
+      center: [overlapCenter.x, middleY, overlapCenter.y],
+      width: Math.min(settings.lVerticalArmWidth, settings.lHorizontalArmWidth), height: depth,
+      clearanceRadius: Math.max(0.05, Math.min(settings.lVerticalArmWidth, settings.lHorizontalArmWidth) * 0.42),
+    });
+  } else if (settings.footprint === 'uShape') {
+    const width = settings.uBridgeLength;
+    const maxDepth = Math.max(settings.uLeftArmLength, settings.uRightArmLength);
+    const left = -width * 0.5;
+    const right = width * 0.5;
+    const back = -maxDepth * 0.5;
+    const portalZ = back + Math.min(settings.uBridgeDepth, Math.min(settings.uLeftArmLength, settings.uRightArmLength)) * 0.5;
+    const leftCenter = transformFootprintPoint(new THREE.Vector2(left + settings.uLeftArmWidth * 0.5, portalZ), settings);
+    const rightCenter = transformFootprintPoint(new THREE.Vector2(right - settings.uRightArmWidth * 0.5, portalZ), settings);
+    portals.push(
+      { id: 'left-to-bridge', from: 'left-arm', to: 'rear-bridge', center: [leftCenter.x, middleY, leftCenter.y], width: settings.uLeftArmWidth, height: depth, clearanceRadius: Math.max(0.05, settings.uLeftArmWidth * 0.42) },
+      { id: 'right-to-bridge', from: 'right-arm', to: 'rear-bridge', center: [rightCenter.x, middleY, rightCenter.y], width: settings.uRightArmWidth, height: depth, clearanceRadius: Math.max(0.05, settings.uRightArmWidth * 0.42) },
+    );
+  }
+  const data: Record<string, unknown> = {
+    schema: 'aquarium-maker-navigation',
+    schemaVersion: 2,
+    coordinateSystem: { units: 'meters', up: '+Y', front: '+Z', floorLevelY: 0 },
+    profile: settings.profile,
+    footprint: settings.footprint,
+    footprintRotation: settings.footprintRotation,
+    footprintMirrored: settings.footprintMirrored,
+    boundsMeters: { min: [box.min.x, waterBottom, box.min.y], max: [box.max.x, waterTop, box.max.y] },
+    waterBoundary: waterLoop.map((point) => [point.x, point.y]),
+    waterHeightRangeMeters: [waterBottom, waterTop],
+    waterSurfaceAreaM2: area,
+    approximateWaterVolumeM3: Math.max(0, area * depth - passageVoidVolume),
+    recommendedMaxFishRadiusM: Math.max(0.05, Math.min(settings.glassThickness + settings.waterWallGap, Math.min(settings.width, settings.depth) * 0.08)),
+    collisionGuidance: 'Keep fish centers inside at least one region polygon, inside the water height range, and outside every dryPassage clearance volume.',
+    suggestedSpawnPoints: regions.map((region, index) => {
+      const polygon = region.polygon as number[][];
+      const sx = polygon.reduce((sum, point) => sum + point[0]!, 0) / Math.max(1, polygon.length);
+      const sz = polygon.reduce((sum, point) => sum + point[1]!, 0) / Math.max(1, polygon.length);
+      return { id: `spawn-${index + 1}`, position: [sx, waterBottom + depth * 0.55, sz], region: region.id };
+    }),
+    regions,
+    portals,
+    dryPassages: passages.map((passage) => ({
+      id: passage.settings.id,
+      name: passage.settings.name,
+      kind: passage.settings.kind,
+      route: passage.settings.route,
+      width: passage.settings.width,
+      floorY: 0,
+      crownY: passage.crown,
+      centerline: passage.segments.flatMap((segment, index) => index === 0
+        ? [[segment.a.x, 0, segment.a.y], [segment.b.x, 0, segment.b.y]]
+        : [[segment.b.x, 0, segment.b.y]]),
+    })),
+  };
+  const navRoot = new THREE.Group();
+  navRoot.name = 'NAV_Aquarium';
+  navRoot.userData = data;
+  for (const region of regions) {
+    const node = new THREE.Group();
+    node.name = `NAV_Region_${String(region.id).replace(/[^a-z0-9]+/gi, '_')}`;
+    node.userData = region;
+    navRoot.add(node);
+  }
+  for (const portal of portals) {
+    const node = new THREE.Group();
+    node.name = `NAV_Portal_${String(portal.id).replace(/[^a-z0-9]+/gi, '_')}`;
+    node.userData = portal;
+    navRoot.add(node);
+  }
+  group.add(navRoot);
+  return data;
+}
+
 function meshStats(group: THREE.Group): { triangles: number; vertices: number } {
   let triangles = 0;
   let vertices = 0;
@@ -1028,12 +1574,15 @@ function disposeMaterial(material: THREE.Material): void {
 
 export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const group = new THREE.Group();
-  group.name = settings.tunnelEnabled ? 'PUBLIC_AQUARIUM_WITH_TUNNEL' : 'PROFESSIONAL_PUBLIC_AQUARIUM';
+  const configuredPassages = activePassages(settings);
+  group.name = configuredPassages.length > 0 ? 'PUBLIC_AQUARIUM_WITH_PASSAGES' : 'PROFESSIONAL_PUBLIC_AQUARIUM';
   group.userData = {
-    generator: 'Aquarium Maker 1.7',
-    geometryProfile: 'composable profile/footprint system',
+    generator: 'Aquarium Maker 1.8',
+    geometryProfile: 'editable arm layout + multi-passage system',
     profile: settings.profile,
     footprint: settings.footprint,
+    footprintRotation: settings.footprintRotation,
+    footprintMirrored: settings.footprintMirrored,
     authoredUnits: 'meters',
     exportUnitsPerMeter: settings.exportScale,
     frontAxis: '+Z',
@@ -1042,15 +1591,15 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     opaqueBackPanel: false,
     groundPreset: settings.groundPreset,
     groundIrregularity: settings.groundIrregularity,
-    tunnelEnabled: settings.tunnelEnabled,
-    tunnelAxis: settings.tunnelEnabled ? settings.tunnelAxis : undefined,
-    tunnelOffset: settings.tunnelEnabled ? settings.tunnelOffset : undefined,
-    tunnelProfile: settings.tunnelEnabled ? (settings.tunnelRoundness <= 0.015 ? 'square' : 'arched') : undefined,
-    tunnelOrder: settings.tunnelEnabled
-      ? settings.tunnelAxis === 'depth'
-        ? 'ENTRANCE(+Z/front) -> EXIT(-Z/back)'
-        : 'ENTRANCE(-X/left) -> EXIT(+X/right)'
-      : undefined,
+    passageCount: configuredPassages.length,
+    passages: configuredPassages.map((passage) => ({
+      id: passage.id,
+      name: passage.name,
+      kind: passage.kind,
+      route: passage.route,
+      entrySide: passage.entrySide,
+      exitSide: passage.kind === 'tunnel' ? passage.exitSide : undefined,
+    })),
   };
 
   const glassOuter = createFootprintShapeLoop(settings, 0);
@@ -1094,17 +1643,15 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const basinMaterial = new THREE.MeshStandardMaterial({
     name: 'TouchPool_Basin', color: new THREE.Color(0.34, 0.39, 0.41), metalness: 0.04, roughness: 0.72,
   });
+
+  // One physical material is shared by the tank wall, entrance glass, tunnel
+  // roofs, elbow chambers, alcove caps, and bridge floors. This removes the
+  // visible color/transmission change that used to appear above portals.
   const glassMaterial = new THREE.MeshPhysicalMaterial({
-    name: 'Acrylic_Glass', color: new THREE.Color(0.84, 0.96, 1), metalness: 0, roughness: 0.025,
-    transmission: 0.965, thickness: settings.glassThickness, attenuationDistance: 18,
+    name: 'Acrylic_Glass', color: new THREE.Color(0.84, 0.96, 1), metalness: 0, roughness: 0.022,
+    transmission: 0.97, thickness: settings.glassThickness, attenuationDistance: 18,
     attenuationColor: new THREE.Color(0.86, 0.96, 1), ior: 1.49,
-    transparent: true, opacity: 0.12, depthWrite: false, envMapIntensity: 1.05, side: THREE.FrontSide,
-  });
-  const tunnelGlassMaterial = new THREE.MeshPhysicalMaterial({
-    name: 'Tunnel_Acrylic', color: new THREE.Color(0.72, 0.92, 1), metalness: 0, roughness: 0.018,
-    transmission: 0.975, thickness: settings.tunnelGlassThickness, attenuationDistance: 16,
-    attenuationColor: new THREE.Color(0.80, 0.95, 1), ior: 1.49,
-    transparent: true, opacity: 0.105, depthWrite: false, envMapIntensity: 1.1, side: THREE.FrontSide,
+    transparent: true, opacity: 0.115, depthWrite: false, envMapIntensity: 1.08, side: THREE.FrontSide,
   });
 
   const groundTexture = createGroundTexture(settings.groundPreset, settings.sandColor, settings.sandVariation, settings.sandGrain, settings.sandSeed);
@@ -1169,6 +1716,24 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     return mesh;
   }
 
+  function mergeParts(parts: THREE.BufferGeometry[], label: string): THREE.BufferGeometry {
+    if (parts.length === 0) throw new Error(`No geometry was generated for ${label}.`);
+    if (parts.length === 1) return parts[0]!;
+    // Three.js primitive/extrude geometries do not always agree on whether an
+    // index exists. A sequential index preserves the exact geometry while
+    // making passage shells, alcove caps, and elbow pieces merge reliably.
+    for (const part of parts) {
+      if (!part.index) {
+        const position = part.getAttribute('position');
+        part.setIndex(Array.from({ length: position.count }, (_, index) => index));
+      }
+    }
+    const merged = mergeGeometries(parts, false);
+    if (!merged) throw new Error(`Could not merge ${label}.`);
+    for (const part of parts) if (part !== merged) part.dispose();
+    return merged;
+  }
+
   const asMulti = (loop: THREE.Vector2[]): MultiPolygon => [loopPolygon(loop)] as MultiPolygon;
   const ringRegion = (outer: THREE.Vector2[], inner: THREE.Vector2[]): MultiPolygon => difference(loopPolygon(outer), loopPolygon(inner));
   const baseRegion = asMulti(baseOuter);
@@ -1178,6 +1743,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const waterRegion = asMulti(waterLoop);
 
   const addGround = (region: MultiPolygon, yBottom: number, yTop: number): void => {
+    if (region.length === 0) return;
     addMesh('INTERIOR_GroundBase', makePolygonPrism(region, yBottom, yTop, true, { includeTop: false }), groundMaterial, false, true);
     addMesh('INTERIOR_GroundSurface', makeTerrainSurface(region, yTop, settings), groundMaterial, false, true);
   };
@@ -1194,6 +1760,11 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(region, yTop), waterSurfaceMaterial, false, false);
     surface.renderOrder = 3;
   };
+
+  let navigationWaterLoop = waterLoop;
+  let navigationWaterBottom = waterBottom;
+  let navigationWaterTop = waterTop;
+  let resolvedPassages: ResolvedPassage[] = [];
 
   if (settings.profile === 'touchPool') {
     const rimInner = createFootprintShapeLoop(settings, -settings.touchRimWidth);
@@ -1214,7 +1785,10 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     addMesh('STRUCTURE_TouchRim', makePolygonPrism(rimRegion, rimBottom, profileTop), frameMaterial);
     addGround(asMulti(basinLoop), touchGroundBottom, touchGroundTop);
     addWater(asMulti(basinLoop), touchGroundTop - 0.012, touchWaterTop);
-  } else if (!settings.tunnelEnabled) {
+    navigationWaterLoop = basinLoop;
+    navigationWaterBottom = touchGroundTop - 0.012;
+    navigationWaterTop = touchWaterTop;
+  } else if (configuredPassages.length === 0) {
     addMesh('STRUCTURE_BasePlinth', makePolygonPrism(baseRegion, profileBottom, baseTop), baseMaterial);
     addMesh('STRUCTURE_BottomRim', makePolygonPrism(frameRegion, baseTop, bottomRimTop), frameMaterial);
     if (settings.profile === 'belowFloor') {
@@ -1222,246 +1796,94 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
       addMesh('STRUCTURE_FloorRim', makePolygonPrism(frameRegion, 0, settings.floorRimHeight), frameMaterial);
     }
     const glass = addMesh('GLASS_AcrylicShell', makePolygonPrism(glassRegion, glassBottom, glassTop), glassMaterial, false, false);
-    glass.renderOrder = 5;
+    glass.renderOrder = 6;
     addGround(groundRegion, sandBottom, sandTop);
     addWater(waterRegion, waterBottom, waterTop);
     addMesh('STRUCTURE_TopRim', makePolygonPrism(frameRegion, topRimBottom, profileTop), frameMaterial);
   } else {
-    const axis = settings.tunnelAxis;
-    const offset = settings.tunnelOffset;
-    const innerHalf = settings.tunnelWidth * 0.5;
-    const squareRoof = settings.tunnelRoundness <= 0.015;
-    const maximumCrown = Math.max(0.55, waterTop - settings.tunnelGlassThickness - 0.28);
-    const wallHeight = Math.min(settings.tunnelWallHeight, squareRoof ? maximumCrown : maximumCrown - 0.18);
-    const requestedRise = innerHalf * settings.tunnelRoundness;
-    const innerRise = squareRoof ? 0 : Math.max(0.08, Math.min(requestedRise, maximumCrown - wallHeight));
-    const innerArch = archProfile(innerHalf, 0, wallHeight, innerRise, settings.tunnelCurveSegments);
-    const outerHalf = innerHalf + settings.tunnelGlassThickness;
-    const outerArch = squareRoof
-      ? archProfile(outerHalf, 0, wallHeight + settings.tunnelGlassThickness, 0, settings.tunnelCurveSegments)
-      : archProfile(outerHalf, 0, wallHeight, innerRise + settings.tunnelGlassThickness, settings.tunnelCurveSegments);
-    const frameOuterHalf = outerHalf + settings.portalFrameWidth;
-    const localGlassOuter = toTunnelLocalLoop(glassOuter, axis, offset);
-    const localGlassInner = toTunnelLocalLoop(glassInner, axis, offset);
-    const outerSpan = selectTunnelSpan(localGlassOuter, frameOuterHalf);
-    const innerSpan = selectTunnelSpan(localGlassInner, outerHalf);
-    const cutSpan: TunnelSpan = {
-      exit: outerSpan.exit - settings.tunnelEndExtension - settings.portalFrameDepth,
-      entrance: outerSpan.entrance + settings.tunnelEndExtension + settings.portalFrameDepth,
-    };
-    const corridor = localCorridorPolygon(axis, offset, frameOuterHalf, cutSpan);
-    const baseCut = difference(loopPolygon(baseOuter), corridor);
-    const bottomRimCut = difference(loopPolygon(frameOuter), loopPolygon(frameInner), corridor);
-    const groundCut = difference(loopPolygon(sandLoop), corridor);
-    const subFloorCut = difference(loopPolygon(glassOuter), loopPolygon(glassInner), corridor);
-    const glassCut = difference(loopPolygon(glassOuter), loopPolygon(glassInner), localCorridorPolygon(axis, offset, outerHalf, outerSpan));
-    const bridgeOverAquarium = settings.profile === 'belowFloor' && settings.tunnelGlassFloor;
+    resolvedPassages = configuredPassages.map((passage) => resolvePassage(
+      passage,
+      glassOuter,
+      waterTop,
+      waterBottom,
+      settings.profile === 'belowFloor',
+    ));
+    const allCuts = resolvedPassages.map((passage) => passage.cutPolygon);
+    const openFloorCuts = resolvedPassages
+      .filter((passage) => !(settings.profile === 'belowFloor' && passage.settings.glassFloor))
+      .map((passage) => passage.cutPolygon);
+    const allRects = resolvedPassages.flatMap((passage) => passage.cutRects);
 
-    // A below-floor tunnel is a bridge over the continuing aquarium, not a
-    // corridor cut all the way through the tank. Its base, substrate, and
-    // opaque sub-floor body therefore remain continuous beneath the bridge.
-    addMesh('STRUCTURE_BasePlinth', makePolygonPrism(bridgeOverAquarium ? baseRegion : baseCut, profileBottom, baseTop), baseMaterial);
-    addMesh('STRUCTURE_BottomRim', makePolygonPrism(bridgeOverAquarium ? frameRegion : bottomRimCut, baseTop, bottomRimTop), frameMaterial);
+    const baseCut = openFloorCuts.length > 0 ? difference(baseRegion, ...openFloorCuts) : baseRegion;
+    const bottomRimCut = openFloorCuts.length > 0 ? difference(frameRegion, ...openFloorCuts) : frameRegion;
+    const subFloorCut = openFloorCuts.length > 0 ? difference(glassRegion, ...openFloorCuts) : glassRegion;
+    const floorRimCut = difference(frameRegion, ...allCuts);
+    const glassCut = difference(glassRegion, ...allCuts);
+    const groundCut = openFloorCuts.length > 0 ? difference(groundRegion, ...openFloorCuts) : groundRegion;
+
+    addMesh('STRUCTURE_BasePlinth', makePolygonPrism(baseCut, profileBottom, baseTop), baseMaterial);
+    addMesh('STRUCTURE_BottomRim', makePolygonPrism(bottomRimCut, baseTop, bottomRimTop), frameMaterial);
     if (settings.profile === 'belowFloor') {
-      addMesh('STRUCTURE_SubFloorBody', makePolygonPrism(bridgeOverAquarium ? glassRegion : subFloorCut, bottomRimTop, 0), subFloorMaterial);
-      // The floor rim still opens at the portal; the bridge side rails continue
-      // that rim cleanly across the passage.
-      addMesh('STRUCTURE_FloorRim', makePolygonPrism(bottomRimCut, 0, settings.floorRimHeight), frameMaterial);
+      addMesh('STRUCTURE_SubFloorBody', makePolygonPrism(subFloorCut, bottomRimTop, 0), subFloorMaterial);
+      addMesh('STRUCTURE_FloorRim', makePolygonPrism(floorRimCut, 0, settings.floorRimHeight), frameMaterial);
     }
     addMesh('STRUCTURE_TopRim', makePolygonPrism(frameRegion, topRimBottom, profileTop), frameMaterial);
 
-    const glassShell = addMesh(
-      'GLASS_AcrylicShell',
+    const glassParts: THREE.BufferGeometry[] = [
       makePolygonPrism(glassCut, glassBottom, glassTop, false, {
-        skipSide: (a, b) => isCorridorBoundaryEdge(a, b, axis, offset, outerHalf, outerSpan),
+        skipSide: (a, b) => corridorBoundaryEdge(a, b, allRects),
       }),
-      glassMaterial,
-      false,
-      false,
-    );
-    glassShell.renderOrder = 6;
+    ];
+    for (const passage of resolvedPassages) {
+      for (const portal of passage.portals) {
+        glassParts.push(portalWallGeometry(portal, passage.settings, glassOuter, glassInner, glassBottom, glassTop, waterTop));
+      }
+    }
+    const glass = addMesh('GLASS_AcrylicShell', mergeParts(glassParts, 'continuous aquarium glass'), glassMaterial, false, false);
+    glass.renderOrder = 6;
 
-    const swappedOuter = localGlassOuter.map((point) => new THREE.Vector2(point.y, point.x));
-    const outerEntranceCross = containingInterval(lineIntervalsAtLocalX(swappedOuter, outerSpan.entrance - 0.002), 0);
-    const outerExitCross = containingInterval(lineIntervalsAtLocalX(swappedOuter, outerSpan.exit + 0.002), 0);
-    const entranceWall = addMesh(
-      'GLASS_EntranceWall',
-      orientTunnelGeometry(
-        makeEndWallWithPortal(
-          outerEntranceCross.exit, outerEntranceCross.entrance,
-          innerSpan.entrance, outerSpan.entrance,
-          glassBottom, glassTop, outerHalf, outerArch.roof,
-        ),
-        axis,
-        offset,
-      ),
-      glassMaterial,
-      false,
-      false,
-    );
-    entranceWall.renderOrder = 6;
-    const exitWall = addMesh(
-      'GLASS_ExitWall',
-      orientTunnelGeometry(
-        makeEndWallWithPortal(
-          outerExitCross.exit, outerExitCross.entrance,
-          outerSpan.exit, innerSpan.exit,
-          glassBottom, glassTop, outerHalf, outerArch.roof,
-        ),
-        axis,
-        offset,
-      ),
-      glassMaterial,
-      false,
-      false,
-    );
-    exitWall.renderOrder = 6;
+    addGround(groundCut, sandBottom, sandTop);
 
-    addGround(bridgeOverAquarium ? groundRegion : groundCut, sandBottom, sandTop);
-
-    const tunnelEntrance = outerSpan.entrance + settings.tunnelEndExtension;
-    const tunnelExit = outerSpan.exit - settings.tunnelEndExtension;
-    const tunnel = addMesh(
-      'TUNNEL_AcrylicShell',
-      orientTunnelGeometry(
-        makeProfileShell(innerArch.full, outerArch.full, tunnelEntrance, tunnelExit, false, false),
-        axis,
-        offset,
-      ),
-      tunnelGlassMaterial,
-      false,
-      false,
-    );
-    tunnel.renderOrder = 4;
-
-    const bridgeFloorThickness = Math.max(0.018, settings.tunnelGlassThickness * 0.55);
-    if (bridgeOverAquarium) {
-      const tunnelLength = Math.abs(tunnelEntrance - tunnelExit);
-      const centerS = (tunnelEntrance + tunnelExit) * 0.5;
-      const glassFloor = addMesh(
-        'TUNNEL_GlassFloor',
-        orientTunnelGeometry(
-          makeBoxGeometry(settings.tunnelWidth, bridgeFloorThickness, tunnelLength, 0, -bridgeFloorThickness * 0.5, centerS),
-          axis,
-          offset,
-        ),
-        tunnelGlassMaterial,
+    resolvedPassages.forEach((passage, passageIndex) => {
+      const safeId = passage.settings.id.replace(/[^a-z0-9]+/gi, '_');
+      const shell = addMesh(
+        `PASSAGE_${safeId}_AcrylicShell`,
+        mergeParts(makePassageShellGeometries(passage, waterTop), `${passage.settings.name} acrylic shell`),
+        glassMaterial,
         false,
         false,
       );
-      glassFloor.renderOrder = 4;
-      const rimHeight = settings.tunnelBridgeRimHeight;
-      const rimWidth = settings.tunnelSideRimWidth;
-      addMesh(
-        'TUNNEL_LeftSideRim',
-        orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, tunnelLength, -innerHalf - rimWidth * 0.5, rimHeight * 0.5, centerS), axis, offset),
-        frameMaterial,
-      );
-      addMesh(
-        'TUNNEL_RightSideRim',
-        orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, tunnelLength, innerHalf + rimWidth * 0.5, rimHeight * 0.5, centerS), axis, offset),
-        frameMaterial,
-      );
+      shell.renderOrder = 6;
+      shell.userData = {
+        passageId: passage.settings.id,
+        kind: passage.settings.kind,
+        route: passage.settings.route,
+      };
 
-      // Narrow cross strips visually divide the acrylic floor into panels,
-      // making the walkable bridge immediately legible without obscuring the
-      // water below it.
-      const spacing = settings.tunnelBridgeSeparatorSpacing;
-      const separatorCount = Math.max(0, Math.floor((tunnelLength - spacing * 0.35) / spacing));
-      const startS = Math.min(tunnelEntrance, tunnelExit);
-      for (let index = 1; index <= separatorCount; index += 1) {
-        const sPosition = startS + (tunnelLength * index) / (separatorCount + 1);
-        addMesh(
-          `TUNNEL_FloorSeparator_${String(index).padStart(2, '0')}`,
-          orientTunnelGeometry(
-            makeBoxGeometry(
-              settings.tunnelWidth + rimWidth * 2,
-              Math.max(0.008, rimHeight * 0.16),
-              settings.tunnelBridgeSeparatorWidth,
-              0,
-              Math.max(0.004, rimHeight * 0.08),
-              sPosition,
-            ),
-            axis,
-            offset,
-          ),
+      passage.portals.forEach((portal, portalIndex) => {
+        const frame = addMesh(
+          `PASSAGE_${safeId}_${String(portalIndex + 1).padStart(2, '0')}_${portal.label === 'entrance' ? 'Entrance' : 'Exit'}Frame`,
+          portalFrameGeometry(portal, passage.settings, waterTop),
           frameMaterial,
         );
-      }
-    }
+        frame.userData = { passageId: passage.settings.id, portalSide: portal.side, portalLabel: portal.label };
+      });
 
-    const frameArch = squareRoof
-      ? archProfile(frameOuterHalf, 0, wallHeight + settings.tunnelGlassThickness + settings.portalFrameWidth, 0, settings.tunnelCurveSegments)
-      : archProfile(frameOuterHalf, 0, wallHeight, innerRise + settings.tunnelGlassThickness + settings.portalFrameWidth, settings.tunnelCurveSegments);
-    addMesh(
-      'TUNNEL_01_EntranceFrame',
-      orientTunnelGeometry(
-        makeProfileShell(outerArch.full, frameArch.full, outerSpan.entrance + settings.portalFrameDepth, outerSpan.entrance - 0.015, true, true),
-        axis,
-        offset,
-      ),
-      frameMaterial,
-    );
-    addMesh(
-      'TUNNEL_02_ExitFrame',
-      orientTunnelGeometry(
-        makeProfileShell(outerArch.full, frameArch.full, outerSpan.exit + 0.015, outerSpan.exit - settings.portalFrameDepth, true, true),
-        axis,
-        offset,
-      ),
-      frameMaterial,
-    );
-
-    const voidHalf = outerHalf + settings.tunnelWaterClearance;
-    // For bridge tunnels the dry void starts at the acrylic floor. Water and
-    // substrate continue beneath it through the full footprint.
-    const tunnelVoidBottom = bridgeOverAquarium
-      ? -bridgeFloorThickness - settings.tunnelWaterClearance
-      : waterBottom;
-    const voidArch = squareRoof
-      ? archProfile(
-        voidHalf,
-        tunnelVoidBottom,
-        Math.max(0.01, wallHeight + settings.tunnelGlassThickness + settings.tunnelWaterClearance - tunnelVoidBottom),
-        0,
-        settings.tunnelCurveSegments,
-      )
-      : archProfile(
-        voidHalf,
-        tunnelVoidBottom,
-        Math.max(0.01, wallHeight + settings.tunnelWaterClearance - tunnelVoidBottom),
-        innerRise + settings.tunnelGlassThickness + settings.tunnelWaterClearance,
-        settings.tunnelCurveSegments,
-      );
-    const localWaterLoop = toTunnelLocalLoop(waterLoop, axis, offset);
-    const waterSpan = selectTunnelSpan(localWaterLoop, voidHalf);
-    let tunnelWaterGeometry: THREE.BufferGeometry;
-    if (bridgeOverAquarium && tunnelVoidBottom > waterBottom + 0.01) {
-      const lowerWater = makePolygonPrism(waterRegion, waterBottom, tunnelVoidBottom, false, { includeTop: false });
-      const upperWater = orientTunnelGeometry(
-        makeGenericWaterVolumeWithTunnel(localWaterLoop, tunnelVoidBottom, waterTop - 0.004, voidArch.full, voidArch.roof, voidHalf, waterSpan),
-        axis,
-        offset,
-      );
-      const merged = mergeGeometries([lowerWater, upperWater], false);
-      if (!merged) {
-        lowerWater.dispose();
-        upperWater.dispose();
-        throw new Error('Could not build the continuing water beneath the tunnel bridge.');
+      if (settings.profile === 'belowFloor' && passage.settings.glassFloor) {
+        const bridge = makeBridgeGeometries(passage);
+        const floor = addMesh(`PASSAGE_${safeId}_GlassFloor`, bridge.floor, glassMaterial, false, false);
+        floor.renderOrder = 6;
+        bridge.rims.forEach((geometry, index) => addMesh(`PASSAGE_${safeId}_SideRim_${String(index + 1).padStart(2, '0')}`, geometry, frameMaterial));
+        bridge.separators.forEach((geometry, index) => addMesh(`PASSAGE_${safeId}_FloorSeparator_${String(index + 1).padStart(2, '0')}`, geometry, frameMaterial));
       }
-      lowerWater.dispose();
-      upperWater.dispose();
-      tunnelWaterGeometry = merged;
-    } else {
-      tunnelWaterGeometry = orientTunnelGeometry(
-        makeGenericWaterVolumeWithTunnel(localWaterLoop, waterBottom, waterTop - 0.004, voidArch.full, voidArch.roof, voidHalf, waterSpan),
-        axis,
-        offset,
-      );
-    }
+
+      // Keep deterministic order in export metadata even when IDs were random.
+      shell.userData.passageOrder = passageIndex + 1;
+    });
+
     const volume = addMesh(
       'WATER_Volume',
-      tunnelWaterGeometry,
+      makeLayeredWaterVolume(waterRegion, waterBottom, waterTop - 0.004, resolvedPassages),
       waterVolumeMaterial,
       false,
       false,
@@ -1470,6 +1892,16 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(waterRegion, waterTop), waterSurfaceMaterial, false, false);
     surface.renderOrder = 3;
   }
+
+  const navigation = buildNavigationMetadata(
+    group,
+    settings,
+    navigationWaterLoop,
+    navigationWaterBottom,
+    navigationWaterTop,
+    resolvedPassages,
+  );
+  group.userData.navigation = navigation;
 
   const stats = meshStats(group);
   return {
