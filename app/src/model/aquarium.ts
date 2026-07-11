@@ -1030,7 +1030,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const group = new THREE.Group();
   group.name = settings.tunnelEnabled ? 'PUBLIC_AQUARIUM_WITH_TUNNEL' : 'PROFESSIONAL_PUBLIC_AQUARIUM';
   group.userData = {
-    generator: 'Aquarium Maker 1.6',
+    generator: 'Aquarium Maker 1.7',
     geometryProfile: 'composable profile/footprint system',
     profile: settings.profile,
     footprint: settings.footprint,
@@ -1119,6 +1119,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     settings.waterSeed,
     settings.waterSurfaceStyle,
     settings.waterWaveScale,
+    settings.waterSurfacePreset,
   );
   const attenuationDistance = THREE.MathUtils.lerp(12, 1, settings.waterTint);
   const volumeOpacity = THREE.MathUtils.lerp(0.035, 0.11, settings.waterTint);
@@ -1129,23 +1130,26 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     transparent: true, opacity: volumeOpacity, depthWrite: false, envMapIntensity: 0.7, side: THREE.FrontSide,
   });
   const surfaceStyle = settings.waterSurfaceStyle;
+  const isPixelWater = settings.waterSurfacePreset === 'pixel';
+  const isCalmWater = settings.waterSurfacePreset === 'calm';
+  const presetNormalMultiplier = isCalmWater ? 0.48 : isPixelWater ? 0.9 : 1;
   const waterSurfaceMaterial = new THREE.MeshPhysicalMaterial({
-    name: 'Water_Surface', color: 0xffffff, map: waterTextures.color, normalMap: waterTextures.normal,
+    name: `Water_Surface_${settings.waterSurfacePreset}`, color: 0xffffff, map: waterTextures.color, normalMap: waterTextures.normal,
     normalScale: new THREE.Vector2(
-      0.32 + settings.waveStrength * (0.65 + surfaceStyle * 0.55),
-      0.32 + settings.waveStrength * (0.65 + surfaceStyle * 0.55),
+      (0.32 + settings.waveStrength * (0.65 + surfaceStyle * 0.55)) * presetNormalMultiplier,
+      (0.32 + settings.waveStrength * (0.65 + surfaceStyle * 0.55)) * presetNormalMultiplier,
     ),
     metalness: 0,
-    roughness: THREE.MathUtils.lerp(0.075, 0.025, surfaceStyle),
-    transmission: THREE.MathUtils.lerp(0.94, 0.76, surfaceStyle),
+    roughness: isPixelWater ? 0.035 : isCalmWater ? 0.085 : THREE.MathUtils.lerp(0.075, 0.025, surfaceStyle),
+    transmission: isPixelWater ? 0.69 : isCalmWater ? 0.96 : THREE.MathUtils.lerp(0.94, 0.76, surfaceStyle),
     thickness: 0.02,
-    attenuationDistance: THREE.MathUtils.lerp(10, 5, surfaceStyle),
+    attenuationDistance: isPixelWater ? 4.6 : THREE.MathUtils.lerp(10, 5, surfaceStyle),
     attenuationColor: new THREE.Color(settings.waterColor),
     ior: 1.333,
     transparent: true,
-    opacity: THREE.MathUtils.lerp(0.23, 0.43, surfaceStyle),
+    opacity: isPixelWater ? 0.52 : isCalmWater ? 0.2 : THREE.MathUtils.lerp(0.23, 0.43, surfaceStyle),
     depthWrite: false,
-    envMapIntensity: THREE.MathUtils.lerp(1.0, 1.35, surfaceStyle),
+    envMapIntensity: isPixelWater ? 1.18 : isCalmWater ? 0.95 : THREE.MathUtils.lerp(1.0, 1.35, surfaceStyle),
     side: THREE.DoubleSide,
   });
 
@@ -1251,11 +1255,17 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     const groundCut = difference(loopPolygon(sandLoop), corridor);
     const subFloorCut = difference(loopPolygon(glassOuter), loopPolygon(glassInner), corridor);
     const glassCut = difference(loopPolygon(glassOuter), loopPolygon(glassInner), localCorridorPolygon(axis, offset, outerHalf, outerSpan));
+    const bridgeOverAquarium = settings.profile === 'belowFloor' && settings.tunnelGlassFloor;
 
-    addMesh('STRUCTURE_BasePlinth', makePolygonPrism(baseCut, profileBottom, baseTop), baseMaterial);
-    addMesh('STRUCTURE_BottomRim', makePolygonPrism(bottomRimCut, baseTop, bottomRimTop), frameMaterial);
+    // A below-floor tunnel is a bridge over the continuing aquarium, not a
+    // corridor cut all the way through the tank. Its base, substrate, and
+    // opaque sub-floor body therefore remain continuous beneath the bridge.
+    addMesh('STRUCTURE_BasePlinth', makePolygonPrism(bridgeOverAquarium ? baseRegion : baseCut, profileBottom, baseTop), baseMaterial);
+    addMesh('STRUCTURE_BottomRim', makePolygonPrism(bridgeOverAquarium ? frameRegion : bottomRimCut, baseTop, bottomRimTop), frameMaterial);
     if (settings.profile === 'belowFloor') {
-      addMesh('STRUCTURE_SubFloorBody', makePolygonPrism(subFloorCut, bottomRimTop, 0), subFloorMaterial);
+      addMesh('STRUCTURE_SubFloorBody', makePolygonPrism(bridgeOverAquarium ? glassRegion : subFloorCut, bottomRimTop, 0), subFloorMaterial);
+      // The floor rim still opens at the portal; the bridge side rails continue
+      // that rim cleanly across the passage.
       addMesh('STRUCTURE_FloorRim', makePolygonPrism(bottomRimCut, 0, settings.floorRimHeight), frameMaterial);
     }
     addMesh('STRUCTURE_TopRim', makePolygonPrism(frameRegion, topRimBottom, profileTop), frameMaterial);
@@ -1307,7 +1317,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     );
     exitWall.renderOrder = 6;
 
-    addGround(groundCut, sandBottom, sandTop);
+    addGround(bridgeOverAquarium ? groundRegion : groundCut, sandBottom, sandTop);
 
     const tunnelEntrance = outerSpan.entrance + settings.tunnelEndExtension;
     const tunnelExit = outerSpan.exit - settings.tunnelEndExtension;
@@ -1324,14 +1334,14 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     );
     tunnel.renderOrder = 4;
 
-    if (settings.profile === 'belowFloor' && settings.tunnelGlassFloor) {
+    const bridgeFloorThickness = Math.max(0.018, settings.tunnelGlassThickness * 0.55);
+    if (bridgeOverAquarium) {
       const tunnelLength = Math.abs(tunnelEntrance - tunnelExit);
       const centerS = (tunnelEntrance + tunnelExit) * 0.5;
-      const floorThickness = Math.max(0.025, settings.tunnelGlassThickness * 0.55);
       const glassFloor = addMesh(
         'TUNNEL_GlassFloor',
         orientTunnelGeometry(
-          makeBoxGeometry(settings.tunnelWidth, floorThickness, tunnelLength, 0, -floorThickness * 0.5, centerS),
+          makeBoxGeometry(settings.tunnelWidth, bridgeFloorThickness, tunnelLength, 0, -bridgeFloorThickness * 0.5, centerS),
           axis,
           offset,
         ),
@@ -1340,7 +1350,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
         false,
       );
       glassFloor.renderOrder = 4;
-      const rimHeight = Math.max(0.06, settings.floorRimHeight * 0.85);
+      const rimHeight = settings.tunnelBridgeRimHeight;
       const rimWidth = settings.tunnelSideRimWidth;
       addMesh(
         'TUNNEL_LeftSideRim',
@@ -1352,6 +1362,32 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
         orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, tunnelLength, innerHalf + rimWidth * 0.5, rimHeight * 0.5, centerS), axis, offset),
         frameMaterial,
       );
+
+      // Narrow cross strips visually divide the acrylic floor into panels,
+      // making the walkable bridge immediately legible without obscuring the
+      // water below it.
+      const spacing = settings.tunnelBridgeSeparatorSpacing;
+      const separatorCount = Math.max(0, Math.floor((tunnelLength - spacing * 0.35) / spacing));
+      const startS = Math.min(tunnelEntrance, tunnelExit);
+      for (let index = 1; index <= separatorCount; index += 1) {
+        const sPosition = startS + (tunnelLength * index) / (separatorCount + 1);
+        addMesh(
+          `TUNNEL_FloorSeparator_${String(index).padStart(2, '0')}`,
+          orientTunnelGeometry(
+            makeBoxGeometry(
+              settings.tunnelWidth + rimWidth * 2,
+              Math.max(0.008, rimHeight * 0.16),
+              settings.tunnelBridgeSeparatorWidth,
+              0,
+              Math.max(0.004, rimHeight * 0.08),
+              sPosition,
+            ),
+            axis,
+            offset,
+          ),
+          frameMaterial,
+        );
+      }
     }
 
     const frameArch = squareRoof
@@ -1377,30 +1413,55 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     );
 
     const voidHalf = outerHalf + settings.tunnelWaterClearance;
+    // For bridge tunnels the dry void starts at the acrylic floor. Water and
+    // substrate continue beneath it through the full footprint.
+    const tunnelVoidBottom = bridgeOverAquarium
+      ? -bridgeFloorThickness - settings.tunnelWaterClearance
+      : waterBottom;
     const voidArch = squareRoof
       ? archProfile(
         voidHalf,
-        waterBottom,
-        Math.max(0.01, wallHeight + settings.tunnelGlassThickness + settings.tunnelWaterClearance - waterBottom),
+        tunnelVoidBottom,
+        Math.max(0.01, wallHeight + settings.tunnelGlassThickness + settings.tunnelWaterClearance - tunnelVoidBottom),
         0,
         settings.tunnelCurveSegments,
       )
       : archProfile(
         voidHalf,
-        waterBottom,
-        Math.max(0.01, wallHeight + settings.tunnelWaterClearance - waterBottom),
+        tunnelVoidBottom,
+        Math.max(0.01, wallHeight + settings.tunnelWaterClearance - tunnelVoidBottom),
         innerRise + settings.tunnelGlassThickness + settings.tunnelWaterClearance,
         settings.tunnelCurveSegments,
       );
     const localWaterLoop = toTunnelLocalLoop(waterLoop, axis, offset);
     const waterSpan = selectTunnelSpan(localWaterLoop, voidHalf);
-    const volume = addMesh(
-      'WATER_Volume',
-      orientTunnelGeometry(
+    let tunnelWaterGeometry: THREE.BufferGeometry;
+    if (bridgeOverAquarium && tunnelVoidBottom > waterBottom + 0.01) {
+      const lowerWater = makePolygonPrism(waterRegion, waterBottom, tunnelVoidBottom, false, { includeTop: false });
+      const upperWater = orientTunnelGeometry(
+        makeGenericWaterVolumeWithTunnel(localWaterLoop, tunnelVoidBottom, waterTop - 0.004, voidArch.full, voidArch.roof, voidHalf, waterSpan),
+        axis,
+        offset,
+      );
+      const merged = mergeGeometries([lowerWater, upperWater], false);
+      if (!merged) {
+        lowerWater.dispose();
+        upperWater.dispose();
+        throw new Error('Could not build the continuing water beneath the tunnel bridge.');
+      }
+      lowerWater.dispose();
+      upperWater.dispose();
+      tunnelWaterGeometry = merged;
+    } else {
+      tunnelWaterGeometry = orientTunnelGeometry(
         makeGenericWaterVolumeWithTunnel(localWaterLoop, waterBottom, waterTop - 0.004, voidArch.full, voidArch.roof, voidHalf, waterSpan),
         axis,
         offset,
-      ),
+      );
+    }
+    const volume = addMesh(
+      'WATER_Volume',
+      tunnelWaterGeometry,
       waterVolumeMaterial,
       false,
       false,

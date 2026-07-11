@@ -6,7 +6,7 @@ import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aq
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, type AquariumSettings } from './model/settings';
 import { ControlPanel } from './ui/panel';
 
-const STORAGE_KEY = 'aquarium-maker-settings-v7-terrain';
+const STORAGE_KEY = 'aquarium-maker-settings-v8-bridge-water';
 
 type CameraView = 'iso' | 'front' | 'side' | 'top' | 'fit';
 
@@ -175,7 +175,7 @@ function updateStats(): void {
     `${settings.width.toFixed(1)} × ${settings.depth.toFixed(1)} × ${visibleHeight.toFixed(1)} m · ${profileLabel}`;
   requireElement<HTMLElement>('#triangle-stat').textContent =
     `${currentBuild?.triangles.toLocaleString() ?? '—'} triangles`;
-  scaleBadge.textContent = `Preview in meters · export ${Math.round(settings.exportScale)}×`;
+  scaleBadge.textContent = `Preview in meters · export ${Number(settings.exportScale.toFixed(3))}×`;
 }
 
 function rebuildNow(autoFrame = false): void {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { GroundPreset } from './settings';
+import type { GroundPreset, WaterSurfacePreset } from './settings';
 
 function hash2(x: number, y: number, seed: number): number {
   let value = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 2147483647);
@@ -51,13 +51,13 @@ function clampByte(value: number): number {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
 
-function makeTexture(canvas: HTMLCanvasElement, color = true): THREE.CanvasTexture {
+function makeTexture(canvas: HTMLCanvasElement, color = true, pixelated = false): THREE.CanvasTexture {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.magFilter = THREE.LinearFilter;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = pixelated ? THREE.NearestFilter : THREE.LinearFilter;
+  texture.minFilter = pixelated ? THREE.NearestMipmapNearestFilter : THREE.LinearMipmapLinearFilter;
   texture.anisotropy = 4;
   texture.needsUpdate = true;
   return texture;
@@ -172,17 +172,22 @@ export function createWaterTextures(
   seed: number,
   style = 0.25,
   waveScale = 0.5,
+  preset: WaterSurfacePreset = 'balanced',
   width = 512,
   height = 256,
 ): WaterTextures {
   const heightField = new Float32Array(width * height);
   const [baseR, baseG, baseB] = hexToRgb(color);
-  const frequency = 0.65 + waveScale * 2.15;
+  const presetFrequency = preset === 'calm' ? 0.68 : preset === 'pixel' ? 1.18 : preset === 'cartoon' ? 0.9 : 1;
+  const frequency = (0.65 + waveScale * 2.15) * presetFrequency;
+  const pixelBlock = preset === 'pixel' ? Math.max(4, Math.round(13 - waveScale * 7)) : 1;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const u = x / Math.max(1, width - 1);
-      const v = y / Math.max(1, height - 1);
+      const sampledX = preset === 'pixel' ? Math.floor(x / pixelBlock) * pixelBlock : x;
+      const sampledY = preset === 'pixel' ? Math.floor(y / pixelBlock) * pixelBlock : y;
+      const u = sampledX / Math.max(1, width - 1);
+      const v = sampledY / Math.max(1, height - 1);
       const broad =
         Math.sin(Math.PI * 2 * frequency * (0.84 * u + 0.43 * v + 0.07 * u * v) + 0.35) * 0.46 +
         Math.sin(Math.PI * 2 * frequency * (0.31 * u - 0.92 * v + 0.06 * u * u) + 2.0) * 0.30 +
@@ -192,7 +197,10 @@ export function createWaterTextures(
         Math.sin(Math.PI * 2 * (0.51 * u - 1.61 * v + 0.08 * u * u) + 2.1) * 0.24 +
         (fbm(u * (5.2 + waveScale * 5), v * (5.2 + waveScale * 5), seed, 4) - 0.5) * 0.42;
       const graphic = broad + (fbm(u * (2.4 + waveScale * 1.8), v * (2.4 + waveScale * 1.8), seed + 441, 3) - 0.5) * 0.16;
-      heightField[y * width + x] = realistic * (1 - style) + graphic * style;
+      let sample = realistic * (1 - style) + graphic * style;
+      if (preset === 'calm') sample = sample * 0.42 + broad * 0.08;
+      if (preset === 'pixel') sample = Math.round(sample * 7) / 7;
+      heightField[y * width + x] = sample;
     }
   }
 
@@ -210,12 +218,13 @@ export function createWaterTextures(
     max = Math.max(max, sample);
   }
   const span = Math.max(0.0001, max - min);
-  const bandCount = Math.round(5 + style * 3);
+  const bandCount = preset === 'pixel' ? 4 : Math.round(5 + style * 3);
 
   for (let i = 0; i < heightField.length; i += 1) {
     const normalized = (heightField[i]! - min) / span;
     const quantized = Math.round(normalized * bandCount) / bandCount;
-    const styled = normalized * (1 - style * 0.72) + quantized * style * 0.72;
+    const quantizeWeight = preset === 'pixel' ? 1 : style * 0.72;
+    const styled = normalized * (1 - quantizeWeight) + quantized * quantizeWeight;
     const variation = (styled - 0.5) * (12 + style * 38);
     const crest = Math.max(0, styled - (0.70 - style * 0.08)) * style * 38;
     const index = i * 4;
@@ -232,7 +241,7 @@ export function createWaterTextures(
   const normalContext = normalCanvas.getContext('2d', { alpha: false });
   if (!normalContext) throw new Error('Canvas 2D is unavailable.');
   const normalImage = normalContext.createImageData(width, height);
-  const normalScale = 2.7 + strength * (11 + style * 5.5);
+  const normalScale = (2.7 + strength * (11 + style * 5.5)) * (preset === 'calm' ? 0.5 : preset === 'pixel' ? 0.82 : 1);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -257,7 +266,7 @@ export function createWaterTextures(
   normalContext.putImageData(normalImage, 0, 0);
 
   return {
-    color: makeTexture(colorCanvas, true),
-    normal: makeTexture(normalCanvas, false),
+    color: makeTexture(colorCanvas, true, preset === 'pixel'),
+    normal: makeTexture(normalCanvas, false, preset === 'pixel'),
   };
 }

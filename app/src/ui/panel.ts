@@ -8,6 +8,7 @@ import type {
   GroundPreset,
   ShapeCornerKey,
   TunnelAxis,
+  WaterSurfacePreset,
 } from '../model/settings';
 import {
   activeShapeCornerKeys,
@@ -20,7 +21,7 @@ import {
 import { createFootprintShapeLoop } from '../model/aquarium';
 
 export type SelectedCorner = keyof CornerRadii | ShapeCornerKey;
-type PanelTab = 'shape' | 'profile' | 'tunnel' | 'water' | 'ground' | 'export';
+type PanelTab = 'shape' | 'profile' | 'tunnel' | 'water' | 'ground';
 
 export interface PanelCallbacks {
   onChange: (settings: AquariumSettings, structural: boolean) => void;
@@ -42,7 +43,7 @@ interface RangeDefinition {
 }
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
-const surfaceLabel = (value: number) => value < 0.34 ? 'Realistic' : value < 0.67 ? 'Balanced' : 'Cartoon';
+const surfaceLabel = (value: number) => value < 0.25 ? 'Subtle' : value < 0.55 ? 'Natural' : value < 0.82 ? 'Graphic' : 'Bold';
 const tunnelShapeLabel = (value: number) => value <= 0.015 ? 'Square' : value < 0.55 ? 'Soft arch' : value < 0.98 ? 'Round arch' : 'Tall arch';
 
 const GROUND_PRESETS: Record<GroundPreset, { color: string; variation: number; grain: number; irregularity: number; moundSize: number }> = {
@@ -61,9 +62,14 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'floorRimHeight', label: 'Floor rim', min: 0.02, max: 0.35, step: 0.005, unit: 'm', structural: true },
   { key: 'lArmWidth', label: 'L vertical arm', min: 0.8, max: 24, step: 0.05, unit: 'm', structural: true },
   { key: 'lRearDepth', label: 'L rear arm', min: 0.8, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'lOpeningWidth', label: 'Open section width', min: 0.2, max: 24, step: 0.05, unit: 'm', structural: true },
+  { key: 'lOpeningDepth', label: 'Open section depth', min: 0.2, max: 12, step: 0.05, unit: 'm', structural: true },
   { key: 'uLeftArmWidth', label: 'U left arm', min: 0.55, max: 12, step: 0.05, unit: 'm', structural: true },
   { key: 'uRightArmWidth', label: 'U right arm', min: 0.55, max: 12, step: 0.05, unit: 'm', structural: true },
   { key: 'uBackDepth', label: 'U bridge depth', min: 0.7, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'uOpeningWidth', label: 'Opening width', min: 0.2, max: 24, step: 0.05, unit: 'm', structural: true },
+  { key: 'uOpeningDepth', label: 'Opening depth', min: 0.2, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'uOpeningOffset', label: 'Opening position', min: -8, max: 8, step: 0.05, unit: 'm', structural: true },
   { key: 'touchPoolHeight', label: 'Pool height', min: 0.25, max: 1.8, step: 0.025, unit: 'm', structural: true },
   { key: 'touchWaterDepth', label: 'Water depth', min: 0.08, max: 1.2, step: 0.025, unit: 'm', structural: true },
   { key: 'touchRimHeight', label: 'Rim height', min: 0.03, max: 0.3, step: 0.005, unit: 'm', structural: true },
@@ -100,6 +106,9 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'portalFrameDepth', label: 'Portal depth', min: 0.04, max: 0.65, step: 0.005, unit: 'm', structural: true },
   { key: 'tunnelWaterClearance', label: 'Water clearance', min: 0.005, max: 0.12, step: 0.005, unit: 'm', structural: true },
   { key: 'tunnelSideRimWidth', label: 'Side rim width', min: 0.03, max: 0.35, step: 0.005, unit: 'm', structural: true },
+  { key: 'tunnelBridgeRimHeight', label: 'Side rim height', min: 0.02, max: 0.35, step: 0.005, unit: 'm', structural: true },
+  { key: 'tunnelBridgeSeparatorSpacing', label: 'Floor panel spacing', min: 0.3, max: 4, step: 0.05, unit: 'm', structural: true },
+  { key: 'tunnelBridgeSeparatorWidth', label: 'Floor separator width', min: 0.005, max: 0.15, step: 0.005, unit: 'm', structural: true },
   { key: 'exportScale', label: 'Units per meter', min: 1, max: 100, step: 1, format: (value) => `${Math.round(value)}×` },
 ];
 
@@ -111,7 +120,7 @@ function rangeMarkup(id: keyof AquariumSettings): string {
       <div class="control-label-row"><label for="${definition.key}-range">${definition.label}</label><output id="${definition.key}-output"></output></div>
       <div class="range-pair">
         <input id="${definition.key}-range" data-range-key="${definition.key}" type="range" min="${definition.min}" max="${definition.max}" step="${definition.step}" />
-        <div class="number-wrap"><input id="${definition.key}-number" data-number-key="${definition.key}" type="number" min="${definition.min}" max="${definition.max}" step="${definition.step}" />${definition.unit ? `<span>${definition.unit}</span>` : ''}</div>
+        <div class="number-wrap"><input id="${definition.key}-number" data-number-key="${definition.key}" type="number" ${definition.min >= 0 ? `min="${definition.min === 0 ? 0 : Math.min(definition.min, 0.001)}"` : ''} step="${definition.step}" />${definition.unit ? `<span>${definition.unit}</span>` : ''}</div>
       </div>
     </div>`;
 }
@@ -205,7 +214,6 @@ export class ControlPanel {
       ['tunnel', 'Tunnel', 'M4 19V11a8 8 0 0 1 16 0v8M8 19v-8a4 4 0 0 1 8 0v8'],
       ['water', 'Water', 'M3 15c3-3 6 3 9 0s6 3 9 0M4 9c3-3 5 2 8 0s5 3 8 0'],
       ['ground', 'Ground', 'M4 17c4-2 8-2 16 0M5 13c5-2 9-2 14 0M7 9h10'],
-      ['export', 'Export', 'M4 7h16M4 12h16M4 17h16M8 5v4m8 1v4m-6 1v4'],
     ];
 
     this.root.innerHTML = `
@@ -222,8 +230,9 @@ export class ControlPanel {
             <div id="shape-standard-height">${rangeMarkup('height')}</div>
             <div id="shape-below-heights">${rangeMarkup('heightAboveFloor')}${rangeMarkup('depthBelowFloor')}</div>
             <div id="shape-touch-height">${rangeMarkup('touchPoolHeight')}</div>
-            <div class="shape-options" id="l-shape-options">${rangeMarkup('lArmWidth')}${rangeMarkup('lRearDepth')}</div>
-            <div class="shape-options" id="u-shape-options">${rangeMarkup('uLeftArmWidth')}${rangeMarkup('uRightArmWidth')}${rangeMarkup('uBackDepth')}</div>
+            <div class="shape-options" id="l-shape-options"><div class="shape-subheading"><strong>Solid arms</strong><span>Thickness of the two legs</span></div>${rangeMarkup('lArmWidth')}${rangeMarkup('lRearDepth')}<div class="shape-subheading"><strong>Open section</strong><span>Edit the missing rectangle directly</span></div>${rangeMarkup('lOpeningWidth')}${rangeMarkup('lOpeningDepth')}</div>
+            <div class="shape-options" id="u-shape-options"><div class="shape-subheading"><strong>Solid arms</strong><span>Independent left, right, and back thickness</span></div>${rangeMarkup('uLeftArmWidth')}${rangeMarkup('uRightArmWidth')}${rangeMarkup('uBackDepth')}<div class="shape-subheading"><strong>Central opening</strong><span>Size and lateral placement of the empty area</span></div>${rangeMarkup('uOpeningWidth')}${rangeMarkup('uOpeningDepth')}${rangeMarkup('uOpeningOffset')}</div>
+            <p class="section-note manual-value-note">Sliders cover the most useful range. You can type a larger positive value whenever the shape can physically contain it.</p>
           `)}
           ${card('Corner designer', 'Every outside and inside corner can be tuned independently', `
             <div class="corner-editor">
@@ -241,7 +250,7 @@ export class ControlPanel {
               <div class="toggle-row"><div><strong>Edit all active corners</strong><span>Apply the next style or radius everywhere</span></div><button class="switch" id="link-corners" type="button" role="switch" aria-checked="false"><span></span></button></div>
               <div class="selected-corner-row"><div><span>Selected corner</span><strong id="selected-corner-name"></strong></div><output id="corner-output"></output></div>
               <div class="corner-mode-selector" role="group"><button type="button" data-corner-mode="rounded"><span class="mode-icon mode-rounded"></span>Rounded</button><button type="button" data-corner-mode="chamfer"><span class="mode-icon mode-chamfer"></span>Flat pane</button><button type="button" data-corner-mode="square"><span class="mode-icon mode-square"></span>Square</button></div>
-              <div id="corner-radius-control"><input class="corner-range" id="corner-range" type="range" min="0.002" max="2" step="0.01" /></div>
+              <div id="corner-radius-control" class="corner-radius-pair"><input class="corner-range" id="corner-range" type="range" min="0.002" max="2" step="0.01" /><div class="number-wrap"><input id="corner-number" type="number" min="0.001" step="0.01" /><span>m</span></div></div>
               <div class="corner-values" id="corner-values"></div>
             </div>
             <p class="section-note" id="corner-compat-note"></p>
@@ -273,7 +282,7 @@ export class ControlPanel {
               ${rangeMarkup('tunnelWidth')}${rangeMarkup('tunnelOffset')}${rangeMarkup('tunnelWallHeight')}
               <div class="tunnel-shape-presets"><button type="button" data-tunnel-shape="square"><span class="tunnel-shape-icon shape-square"></span><strong>Square</strong></button><button type="button" data-tunnel-shape="soft"><span class="tunnel-shape-icon shape-soft"></span><strong>Soft</strong></button><button type="button" data-tunnel-shape="arch"><span class="tunnel-shape-icon shape-arch"></span><strong>Arch</strong></button></div>
               ${rangeMarkup('tunnelRoundness')}
-              <div class="below-tunnel-options" id="below-tunnel-options"><div class="toggle-row"><div><strong>Glass floor</strong><span>Glass walking floor with protective side rims</span></div><button class="switch" id="tunnel-glass-floor" type="button" role="switch"><span></span></button></div>${rangeMarkup('tunnelSideRimWidth')}</div>
+              <div class="below-tunnel-options" id="below-tunnel-options"><div class="toggle-row"><div><strong>Acrylic bridge floor</strong><span>The aquarium and substrate continue beneath the walkable glass bridge</span></div><button class="switch" id="tunnel-glass-floor" type="button" role="switch"><span></span></button></div>${rangeMarkup('tunnelSideRimWidth')}${rangeMarkup('tunnelBridgeRimHeight')}${rangeMarkup('tunnelBridgeSeparatorSpacing')}${rangeMarkup('tunnelBridgeSeparatorWidth')}<p class="section-note">Slim cross strips divide the glass into readable floor panels while keeping the view below open.</p></div>
               <details class="advanced-block"><summary>Advanced tunnel geometry</summary>${rangeMarkup('tunnelGlassThickness')}${rangeMarkup('tunnelCurveSegments')}${rangeMarkup('tunnelEndExtension')}${rangeMarkup('portalFrameWidth')}${rangeMarkup('portalFrameDepth')}${rangeMarkup('tunnelWaterClearance')}</details>
               <p class="section-note">On concave footprints, the passage uses the continuous arm under its center. If it enters an opening, move or narrow it until the preview updates.</p>
             </div>
@@ -281,7 +290,7 @@ export class ControlPanel {
         </section>
 
         <section class="tab-pane" data-tab-panel="water" hidden>
-          ${card('Water surface', 'Choose a look first, then tune only what matters', `<div class="water-presets"><button type="button" data-water-preset="realistic"><strong>Realistic</strong><small>Fine low-contrast ripples</small></button><button type="button" data-water-preset="balanced"><strong>Balanced</strong><small>Readable game water</small></button><button type="button" data-water-preset="cartoon"><strong>Cartoon</strong><small>Bold shape and highlights</small></button></div>${colorMarkup('waterColor', 'Water color')}${rangeMarkup('waterTint')}${rangeMarkup('waterSurfaceStyle')}${rangeMarkup('waveStrength')}${rangeMarkup('waterWaveScale')}`)}
+          ${card('Water surface', 'Start with a visual preset, then tune its definition', `<div class="water-style-presets"><button type="button" data-water-preset="calm"><span class="water-swatch water-calm"></span><strong>Calm</strong><small>Broad and quiet</small></button><button type="button" data-water-preset="realistic"><span class="water-swatch water-realistic"></span><strong>Realistic</strong><small>Fine natural ripples</small></button><button type="button" data-water-preset="balanced"><span class="water-swatch water-balanced"></span><strong>Balanced</strong><small>Readable game water</small></button><button type="button" data-water-preset="cartoon"><span class="water-swatch water-cartoon"></span><strong>Cartoon</strong><small>Graphic highlights</small></button><button type="button" data-water-preset="pixel"><span class="water-swatch water-pixel"></span><strong>Pixel</strong><small>Blocky stepped waves</small></button></div>${colorMarkup('waterColor', 'Water color')}${rangeMarkup('waterTint')}${rangeMarkup('waterSurfaceStyle')}${rangeMarkup('waveStrength')}${rangeMarkup('waterWaveScale')}`)}
           ${card('Water placement', 'The touch-pool depth is controlled in Profile', `<div id="standard-water-level">${rangeMarkup('waterLevel')}</div>`)}
         </section>
 
@@ -290,9 +299,6 @@ export class ControlPanel {
           ${card('Floor shape', 'Real mesh deformation creates low mounds without visible giant triangles', `${rangeMarkup('groundIrregularity')}${rangeMarkup('groundMoundSize')}${rangeMarkup('groundMoundCount')}${rangeMarkup('groundTerrainDetail')}<div class="action-row"><button class="button button-quiet" id="randomize-ground" type="button">New terrain seed</button></div>`)}
         </section>
 
-        <section class="tab-pane" data-tab-panel="export" hidden>
-          ${card('GLB export', 'The preview stays in meters; scale is applied only to the downloaded model', `${rangeMarkup('exportScale')}<div class="export-summary"><span>Exported bounds</span><strong id="export-dimensions"></strong><small>Y-up, ready for Blender and game engines</small></div>`)}
-        </section>
       </div>`;
   }
 
@@ -319,6 +325,15 @@ export class ControlPanel {
 
     this.root.querySelector<HTMLInputElement>('#corner-range')!.addEventListener('input', (event) => {
       const value = Number.parseFloat((event.target as HTMLInputElement).value);
+      const targets = this.linkCorners ? this.activeCornerKeys() : [this.selectedCorner];
+      for (const key of targets) this.setCornerRadius(key, value);
+      normalizeSettings(this.settings);
+      this.refreshCornerEditor();
+      this.callbacks.onChange(this.settings, true);
+    });
+    this.root.querySelector<HTMLInputElement>('#corner-number')!.addEventListener('change', (event) => {
+      const value = Number.parseFloat((event.target as HTMLInputElement).value);
+      if (!Number.isFinite(value) || value <= 0) { this.refreshCornerEditor(); return; }
       const targets = this.linkCorners ? this.activeCornerKeys() : [this.selectedCorner];
       for (const key of targets) this.setCornerRadius(key, value);
       normalizeSettings(this.settings);
@@ -381,13 +396,24 @@ export class ControlPanel {
     }));
     this.root.querySelector<HTMLButtonElement>('#randomize-ground')!.addEventListener('click', () => { this.settings.sandSeed = Math.floor(Math.random() * 1_000_000); this.callbacks.onChange(this.settings, true); });
     this.root.querySelectorAll<HTMLButtonElement>('[data-water-preset]').forEach((button) => button.addEventListener('click', () => {
-      const preset = button.dataset.waterPreset;
-      if (preset === 'realistic') { this.settings.waterSurfaceStyle = 0.16; this.settings.waveStrength = 0.3; this.settings.waterWaveScale = 0.7; }
+      const preset = button.dataset.waterPreset as WaterSurfacePreset;
+      this.settings.waterSurfacePreset = preset;
+      if (preset === 'calm') { this.settings.waterSurfaceStyle = 0.08; this.settings.waveStrength = 0.12; this.settings.waterWaveScale = 0.18; }
+      else if (preset === 'realistic') { this.settings.waterSurfaceStyle = 0.18; this.settings.waveStrength = 0.32; this.settings.waterWaveScale = 0.74; }
       else if (preset === 'balanced') { this.settings.waterSurfaceStyle = 0.5; this.settings.waveStrength = 0.55; this.settings.waterWaveScale = 0.48; }
-      else { this.settings.waterSurfaceStyle = 0.9; this.settings.waveStrength = 0.82; this.settings.waterWaveScale = 0.24; }
+      else if (preset === 'cartoon') { this.settings.waterSurfaceStyle = 0.9; this.settings.waveStrength = 0.82; this.settings.waterWaveScale = 0.24; }
+      else { this.settings.waterSurfaceStyle = 0.96; this.settings.waveStrength = 0.72; this.settings.waterWaveScale = 0.58; }
       this.refresh();
       this.callbacks.onChange(this.settings, false);
     }));
+
+    document.querySelector<HTMLInputElement>('#export-scale-number')!.addEventListener('change', (event) => {
+      const value = Number.parseFloat((event.target as HTMLInputElement).value);
+      if (Number.isFinite(value) && value > 0) this.settings.exportScale = value;
+      normalizeSettings(this.settings);
+      this.refresh();
+      this.callbacks.onChange(this.settings, false);
+    });
 
     document.querySelector<HTMLButtonElement>('#reset-button')!.addEventListener('click', () => { const defaults = cloneSettings(DEFAULT_SETTINGS); this.settings = defaults; this.callbacks.onReset(defaults); this.ensureSelectedCorner(); this.refresh(); });
     document.querySelector<HTMLButtonElement>('#share-button')!.addEventListener('click', this.callbacks.onShare);
@@ -404,7 +430,25 @@ export class ControlPanel {
     if (!definition) return;
     const value = Number.parseFloat(raw);
     if (!Number.isFinite(value)) return;
-    (this.settings as unknown as Record<string, number>)[key] = value;
+
+    // Opening controls are direct views of the same dimensions used by the arm
+    // controls. Keep both representations synchronized so either can be edited.
+    if (key === 'lOpeningWidth') this.settings.lArmWidth = this.settings.width - value;
+    else if (key === 'lOpeningDepth') this.settings.lRearDepth = this.settings.depth - value;
+    else if (key === 'uOpeningWidth') {
+      const offset = this.settings.uOpeningOffset;
+      const totalArms = this.settings.width - value;
+      this.settings.uLeftArmWidth = totalArms * 0.5 + offset;
+      this.settings.uRightArmWidth = totalArms * 0.5 - offset;
+    } else if (key === 'uOpeningDepth') this.settings.uBackDepth = this.settings.depth - value;
+    else if (key === 'uOpeningOffset') {
+      const halfArms = (this.settings.width - this.settings.uOpeningWidth) * 0.5;
+      this.settings.uLeftArmWidth = halfArms + value;
+      this.settings.uRightArmWidth = halfArms - value;
+    } else {
+      (this.settings as unknown as Record<string, number>)[key] = value;
+    }
+
     normalizeSettings(this.settings);
     this.refresh();
     this.callbacks.onChange(this.settings, Boolean(definition.structural));
@@ -438,14 +482,12 @@ export class ControlPanel {
         if (definition.key === 'tunnelWidth') range.max = String(maxTunnelWidth);
         if (definition.key === 'tunnelOffset') { range.min = String(-maxTunnelOffset); range.max = String(maxTunnelOffset); }
         if (definition.key === 'tunnelWallHeight') range.max = String(Math.max(0.45, activeVerticalHeight * 0.65));
-        range.value = String(value);
+        const sliderMin = Number.parseFloat(range.min);
+        const sliderMax = Number.parseFloat(range.max);
+        range.value = String(THREE.MathUtils.clamp(value, sliderMin, sliderMax));
+        range.closest('.control-row')?.classList.toggle('is-beyond-slider', value < sliderMin - 1e-9 || value > sliderMax + 1e-9);
       }
-      if (number) {
-        if (definition.key === 'tunnelWidth') number.max = String(maxTunnelWidth);
-        if (definition.key === 'tunnelOffset') { number.min = String(-maxTunnelOffset); number.max = String(maxTunnelOffset); }
-        if (definition.key === 'tunnelWallHeight') number.max = String(Math.max(0.45, activeVerticalHeight * 0.65));
-        number.value = String(Number(value.toFixed(3)));
-      }
+      if (number) number.value = String(Number(value.toFixed(3)));
       if (output) output.textContent = this.formatValue(definition, value);
     }
 
@@ -463,7 +505,10 @@ export class ControlPanel {
     const exportedHeight = this.settings.profile === 'belowFloor'
       ? this.settings.heightAboveFloor + this.settings.depthBelowFloor
       : this.settings.profile === 'touchPool' ? this.settings.touchPoolHeight : this.settings.height;
-    this.root.querySelector<HTMLElement>('#export-dimensions')!.textContent = `${(this.settings.width * this.settings.exportScale).toFixed(1)} × ${(this.settings.depth * this.settings.exportScale).toFixed(1)} × ${(exportedHeight * this.settings.exportScale).toFixed(1)} units`;
+    const scaleInput = document.querySelector<HTMLInputElement>('#export-scale-number');
+    if (scaleInput) scaleInput.value = String(Number(this.settings.exportScale.toFixed(3)));
+    const dimensions = document.querySelector<HTMLElement>('#footer-export-dimensions');
+    if (dimensions) dimensions.textContent = `${(this.settings.width * this.settings.exportScale).toFixed(1)} × ${(this.settings.depth * this.settings.exportScale).toFixed(1)} × ${(exportedHeight * this.settings.exportScale).toFixed(1)} units`;
   }
 
   private refreshTabs(): void {
@@ -498,9 +543,7 @@ export class ControlPanel {
   }
 
   private refreshWaterStyle(): void {
-    const style = this.settings.waterSurfaceStyle;
-    const selected = style < 0.28 ? 'realistic' : style < 0.72 ? 'balanced' : 'cartoon';
-    this.root.querySelectorAll<HTMLButtonElement>('[data-water-preset]').forEach((button) => button.classList.toggle('is-active', button.dataset.waterPreset === selected));
+    this.root.querySelectorAll<HTMLButtonElement>('[data-water-preset]').forEach((button) => button.classList.toggle('is-active', button.dataset.waterPreset === this.settings.waterSurfacePreset));
   }
 
   private refreshTunnelEditor(): void {
@@ -604,8 +647,11 @@ export class ControlPanel {
     const range = this.root.querySelector<HTMLInputElement>('#corner-range')!;
     const mode = this.getCornerMode(this.selectedCorner);
     range.max = String(maxRadius);
-    range.value = String(this.getCornerRadius(this.selectedCorner));
+    range.value = String(Math.min(maxRadius, this.getCornerRadius(this.selectedCorner)));
     range.disabled = mode === 'square';
+    const cornerNumber = this.root.querySelector<HTMLInputElement>('#corner-number')!;
+    cornerNumber.value = String(Number(this.getCornerRadius(this.selectedCorner).toFixed(3)));
+    cornerNumber.disabled = mode === 'square';
     this.root.querySelector<HTMLElement>('#corner-radius-control')!.classList.toggle('is-disabled', mode === 'square');
     this.root.querySelector<HTMLOutputElement>('#corner-output')!.textContent = mode === 'square' ? 'Sharp' : `${this.getCornerRadius(this.selectedCorner).toFixed(2)} m`;
     this.root.querySelector<HTMLElement>('#selected-corner-name')!.textContent = this.cornerName(this.selectedCorner);

@@ -1,116 +1,112 @@
-# Aquarium Maker
+# Aquarium Maker 1.7
 
-Aquarium Maker is a finished frontend-only editor for designing public-aquarium models, previewing them in real time, and downloading game-ready GLB files. Everything runs in the browser: no account, server, upload, API key, or database is required.
+Aquarium Maker is a browser-only public-aquarium model generator. It previews the model live and exports a game-ready binary GLB without uploading anything or requiring a server.
 
-## v1.6 — composable tanks and terrain
+## What is new in 1.7
 
-This release is a structural repair and expansion of the aquarium generator.
+### Below-floor tunnel bridges
 
-### A cleaner editor
+Below-floor tunnels can now behave as acrylic bridges rather than cutting a dry trench through the entire aquarium.
 
-The controls are divided by the decision the user is making:
+When **Profile → Below floor** and **Tunnel → Acrylic bridge floor** are enabled:
 
-- **Shape** — footprint, size, vertical dimensions, arm dimensions, and corner treatment
-- **Profile** — standard aquarium, below-floor aquarium, or touch pool
-- **Tunnel** — direction, offset, arch/square profile, frames, glass, and below-floor tunnel floor
-- **Water** — realistic through cartoon presets, tint, waves, and surface definition
-- **Ground** — material preset, color/noise, and real floor deformation
-- **Export** — file name and game-unit scale
+- the opaque underground tank body continues beneath the tunnel;
+- substrate and water continue under the glass walking floor;
+- the bridge receives independent side-rim width and height controls;
+- narrow floor separators divide the acrylic into readable panels;
+- separator spacing and thickness are adjustable;
+- the bridge pieces are exported with clear names such as `TUNNEL_GlassFloor`, `TUNNEL_LeftSideRim`, and `TUNNEL_FloorSeparator_01`.
 
-Controls that do not apply to the current profile are hidden. For example, a below-floor tank shows **Above floor** and **Below floor** in Shape instead of the unused standard height slider.
+Turning the acrylic floor off restores the open-bottom tunnel behavior.
 
-### True touch pools
+### Manual values beyond slider ranges
 
-Touch pools no longer behave like short glass aquariums.
+Sliders remain intentionally compact and useful for everyday editing. Their adjacent number fields are no longer limited to the slider maximum. Larger positive typed values are accepted whenever the resulting geometry is physically valid.
 
-- Default total height: **0.5 m**
-- Opaque basin walls and floor
-- Broad touch rim
-- Shallow configurable water depth
-- Optional pedestal
-- No acrylic wall mesh
-- Rectangle, L, and U footprints supported
-- Tunnels intentionally unavailable for touch pools
+Semantic and physical constraints still apply. For example, a tunnel cannot be wider than the arm it crosses, and a corner radius cannot exceed the surrounding wall lengths.
 
-### Rebuilt L and U shapes
+### Expanded water presets
 
-L- and U-shaped tanks now use shared polygon regions for the base, rims, acrylic, water, and substrate. This removes overlapping rim meshes and the associated z-fighting and normal glitches.
+The Water tab now contains restored visual preset cards with clear surface illustrations:
 
-Every visible corner can be edited independently, including concave inner elbows. Each corner supports:
+- Calm
+- Realistic
+- Balanced
+- Cartoon
+- Pixel
 
-- Rounded
-- Flat diagonal pane
-- Square
-- Independent radius
+Pixel water uses quantized procedural bands, block-like normals, and nearest texture filtering. Every preset can still be refined with color, side tint, surface character, wave definition, and wave size.
 
-### Tunnels in rectangle, L, and U tanks
+### Cleaner export controls
 
-Straight tunnels can now be placed through all three footprints.
+The Export tab was removed. **Units per meter** now lives beside the download controls in the permanent footer, along with the current exported bounds. This keeps the editor to five focused tabs:
 
-- Front-to-back or left-to-right direction
-- Lateral offset control
-- Square, soft, or arched roof
-- Automatic selection of a continuous valid arm through concave footprints
-- Standard and below-floor profiles
-- Below-floor tunnels can include a named glass floor and side rims
+`Shape · Profile · Tunnel · Water · Ground`
 
-Some offset/width combinations cannot physically cross a continuous part of an L or U shape. When that happens, the app keeps the last valid model, restores the prior controls, and explains the invalid placement instead of exporting mismatched geometry.
+### More direct L and U controls
 
-### Below-floor profile
+L-shaped tanks expose both their solid arm dimensions and the width/depth of the missing section.
 
-- Tank body extends into negative Y in the browser’s Y-up model space
-- No floor polygon is exported
-- Normal floor-level rim
-- Opaque structural body below the game floor
-- Transparent viewing section above the floor
-- Separate above-floor and below-floor heights
-- Compatible with rectangle, L, U, and tunnels
+U-shaped tanks expose:
 
-### Deformed substrate
+- left arm width;
+- right arm width;
+- rear bridge depth;
+- opening width;
+- opening depth;
+- opening lateral position.
 
-Ground is no longer limited to a flat textured plane.
+The arm and opening fields are synchronized, so either representation can be edited.
 
-The Ground tab includes:
+## Supported combinations
 
-- Floor irregularity
-- Mound size
-- Mound count
-- Terrain detail
-- Regeneratable terrain seed
+| Footprint | Standard | Below floor | Touch pool | Tunnel |
+| --- | --- | --- | --- | --- |
+| Rectangle | Yes | Yes | Yes | Standard and below floor |
+| L shape | Yes | Yes | Yes | Standard and below floor |
+| U shape | Yes | Yes | Yes | Standard and below floor |
 
-The terrain is a shared indexed mesh with edge fading and smooth normals. Large tanks automatically receive enough subdivision to avoid the oversized isolated triangles seen in earlier builds. Sand, dirt, algae, and gravel presets remain available.
+Touch pools intentionally do not support tunnels.
 
 ## Development
 
 ```bash
 npm install
-npm run check
-npm run validate:model
+npm run dev
+```
+
+Production build and synchronized GitHub Pages files:
+
+```bash
 npm run build
 ```
 
-`npm run validate:model` exercises standard, touch-pool, below-floor, rectangle/L/U, mixed-corner, large-terrain, and tunnel combinations. It fails on invalid vertices, indices, normals, or degenerate triangles.
+Geometry validation:
 
-## GitHub Pages deployment
+```bash
+npm run validate:model
+```
 
-The complete repository includes several deployment options:
+## GitHub Pages
 
-- `.github/workflows/deploy.yml` — recommended GitHub Actions deployment
-- `docs/` — GitHub Pages branch-folder deployment
-- root `index.html` and `assets/` — direct static hosting
-- `standalone.html` — one-file local/offline version
+The repository supports:
 
-Recommended setup:
+- GitHub Actions deployment;
+- deployment from the repository root;
+- deployment from `/docs`;
+- opening the generated `standalone.html` directly.
 
-1. Replace the repository contents with this package.
-2. Push to `main`.
-3. Open **Settings → Pages**.
-4. Select **GitHub Actions** as the source.
+For the recommended setup, choose **GitHub Actions** under **Settings → Pages** and push to `main`.
 
 ## Export conventions
 
-- Editor dimensions are authored in meters.
-- Default export scale is 10 game units per meter.
-- GLB uses Y-up coordinates and imports upright in Blender.
-- Components have descriptive names for engine-side material replacement.
-- Water volume and water surface remain separate meshes.
+- Preview units: authored meters
+- Default export scale: 10 units per meter
+- glTF up axis: Y-up
+- Format: binary GLB
+- Open aquarium top
+- Named structural, glass, water, ground, and tunnel meshes
+
+## Privacy
+
+All geometry, procedural textures, preview rendering, and GLB export happen locally in the browser.
