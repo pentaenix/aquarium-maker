@@ -8,6 +8,8 @@ export interface CornerRadii {
 export type CornerMode = 'rounded' | 'chamfer' | 'square';
 export type TunnelAxis = 'depth' | 'width';
 export type GroundPreset = 'sand' | 'dirt' | 'algae' | 'gravel';
+export type AquariumProfile = 'standard' | 'belowFloor' | 'touchPool';
+export type FootprintType = 'rectangle' | 'lShape' | 'uShape';
 
 export interface CornerModes {
   frontLeft: CornerMode;
@@ -20,6 +22,8 @@ export interface AquariumSettings {
   width: number;
   depth: number;
   height: number;
+  profile: AquariumProfile;
+  footprint: FootprintType;
   radii: CornerRadii;
   cornerModes: CornerModes;
   curveSegments: number;
@@ -30,6 +34,21 @@ export interface AquariumSettings {
   frameOverhang: number;
   frameOverlap: number;
   glassThickness: number;
+
+  depthBelowFloor: number;
+  heightAboveFloor: number;
+  floorRimHeight: number;
+  subFloorBodyColor: string;
+
+  lArmWidth: number;
+  lRearDepth: number;
+  uLeftArmWidth: number;
+  uRightArmWidth: number;
+  uBackDepth: number;
+
+  touchRimWidth: number;
+  touchPedestalHeight: number;
+  touchBasinInset: number;
 
   groundPreset: GroundPreset;
   sandHeight: number;
@@ -60,6 +79,8 @@ export interface AquariumSettings {
   portalFrameWidth: number;
   portalFrameDepth: number;
   tunnelWaterClearance: number;
+  tunnelGlassFloor: boolean;
+  tunnelSideRimWidth: number;
 
   exportScale: number;
 }
@@ -68,6 +89,8 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   width: 10,
   depth: 4.8,
   height: 4.15,
+  profile: 'standard',
+  footprint: 'rectangle',
   radii: {
     frontLeft: 0.58,
     frontRight: 0.58,
@@ -88,6 +111,21 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   frameOverhang: 0.055,
   frameOverlap: 0.045,
   glassThickness: 0.055,
+
+  depthBelowFloor: 3.35,
+  heightAboveFloor: 1.12,
+  floorRimHeight: 0.075,
+  subFloorBodyColor: '#525a62',
+
+  lArmWidth: 3.55,
+  lRearDepth: 2.9,
+  uLeftArmWidth: 2.45,
+  uRightArmWidth: 2.45,
+  uBackDepth: 2.2,
+
+  touchRimWidth: 0.38,
+  touchPedestalHeight: 0.68,
+  touchBasinInset: 0.7,
 
   groundPreset: 'sand',
   sandHeight: 0.07,
@@ -118,6 +156,8 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   portalFrameWidth: 0.14,
   portalFrameDepth: 0.2,
   tunnelWaterClearance: 0.025,
+  tunnelGlassFloor: true,
+  tunnelSideRimWidth: 0.1,
 
   exportScale: 10,
 };
@@ -142,12 +182,36 @@ function isCornerMode(value: unknown): value is CornerMode {
   return value === 'rounded' || value === 'chamfer' || value === 'square';
 }
 
+function isProfile(value: unknown): value is AquariumProfile {
+  return value === 'standard' || value === 'belowFloor' || value === 'touchPool';
+}
+
+function isFootprint(value: unknown): value is FootprintType {
+  return value === 'rectangle' || value === 'lShape' || value === 'uShape';
+}
+
+function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+export function tunnelAllowed(settings: AquariumSettings): boolean {
+  return settings.profile !== 'touchPool' && settings.footprint === 'rectangle';
+}
+
 export function normalizeSettings(settings: AquariumSettings): AquariumSettings {
-  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
+
+  if (!isProfile(settings.profile)) settings.profile = 'standard';
+  if (!isFootprint(settings.footprint)) settings.footprint = 'rectangle';
 
   settings.width = clamp(settings.width, 2, 30);
   settings.depth = clamp(settings.depth, 1, 15);
   settings.height = clamp(settings.height, 1, 12);
+  settings.depthBelowFloor = clamp(settings.depthBelowFloor, 0.2, 12);
+  settings.heightAboveFloor = clamp(settings.heightAboveFloor, 0.35, 6);
+  settings.floorRimHeight = clamp(settings.floorRimHeight, 0.02, 0.35);
+  if (!isHexColor(settings.subFloorBodyColor)) settings.subFloorBodyColor = DEFAULT_SETTINGS.subFloorBodyColor;
+
   const minDimension = Math.min(settings.width, settings.depth);
   const maxRadius = Math.max(0.02, minDimension * 0.49);
   settings.curveSegments = Math.round(clamp(settings.curveSegments, 2, 16));
@@ -157,6 +221,21 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
     if (!isCornerMode(settings.cornerModes[key])) settings.cornerModes[key] = 'rounded';
   }
 
+  settings.lArmWidth = clamp(settings.lArmWidth, 0.6, settings.width - 0.6);
+  settings.lRearDepth = clamp(settings.lRearDepth, 0.6, settings.depth - 0.6);
+  settings.uLeftArmWidth = clamp(settings.uLeftArmWidth, 0.45, settings.width * 0.45);
+  settings.uRightArmWidth = clamp(settings.uRightArmWidth, 0.45, settings.width * 0.45);
+  if (settings.uLeftArmWidth + settings.uRightArmWidth > settings.width - 0.75) {
+    const scale = (settings.width - 0.75) / (settings.uLeftArmWidth + settings.uRightArmWidth);
+    settings.uLeftArmWidth *= scale;
+    settings.uRightArmWidth *= scale;
+  }
+  settings.uBackDepth = clamp(settings.uBackDepth, 0.55, settings.depth - 0.55);
+
+  settings.touchRimWidth = clamp(settings.touchRimWidth, 0.08, Math.min(settings.width, settings.depth) * 0.22);
+  settings.touchPedestalHeight = clamp(settings.touchPedestalHeight, 0, settings.height * 0.7);
+  settings.touchBasinInset = clamp(settings.touchBasinInset, 0.05, Math.min(settings.width, settings.depth) * 0.28);
+
   settings.baseHeight = clamp(settings.baseHeight, 0.02, 0.5);
   settings.bottomRimHeight = clamp(settings.bottomRimHeight, 0.02, 0.5);
   settings.topRimHeight = clamp(settings.topRimHeight, 0.02, 0.6);
@@ -165,19 +244,21 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.frameOverhang = clamp(settings.frameOverhang, 0, 0.3);
   settings.frameOverlap = clamp(settings.frameOverlap, 0.01, 0.3);
 
+  const activeHeight = settings.profile === 'belowFloor' ? settings.heightAboveFloor + settings.depthBelowFloor : settings.height;
   const structuralHeight = settings.baseHeight + settings.bottomRimHeight + settings.topRimHeight;
-  if (structuralHeight > settings.height * 0.35) {
-    const ratio = (settings.height * 0.35) / structuralHeight;
+  if (structuralHeight > activeHeight * 0.35) {
+    const ratio = (activeHeight * 0.35) / structuralHeight;
     settings.baseHeight *= ratio;
     settings.bottomRimHeight *= ratio;
     settings.topRimHeight *= ratio;
   }
 
   if (!isGroundPreset(settings.groundPreset)) settings.groundPreset = 'sand';
-  settings.sandHeight = clamp(settings.sandHeight, 0.02, Math.max(0.03, settings.height * 0.15));
+  settings.sandHeight = clamp(settings.sandHeight, 0.02, Math.max(0.03, activeHeight * 0.15));
   settings.sandWallGap = clamp(settings.sandWallGap, 0.01, 0.3);
   settings.sandVariation = clamp(settings.sandVariation, 0, 1);
   settings.sandGrain = clamp(settings.sandGrain, 0.1, 2.5);
+  if (!isHexColor(settings.sandColor)) settings.sandColor = DEFAULT_SETTINGS.sandColor;
 
   settings.waterLevel = clamp(settings.waterLevel, 0.2, 0.97);
   settings.waterWallGap = clamp(settings.waterWallGap, 0.005, 0.2);
@@ -185,12 +266,14 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.waveStrength = clamp(settings.waveStrength, 0, 1);
   settings.waterSurfaceStyle = clamp(settings.waterSurfaceStyle, 0, 1);
   settings.waterWaveScale = clamp(settings.waterWaveScale, 0, 1);
+  if (!isHexColor(settings.waterColor)) settings.waterColor = DEFAULT_SETTINGS.waterColor;
 
-  settings.tunnelEnabled = Boolean(settings.tunnelEnabled);
+  settings.tunnelEnabled = Boolean(settings.tunnelEnabled) && tunnelAllowed(settings);
   if (!isTunnelAxis(settings.tunnelAxis)) settings.tunnelAxis = 'depth';
   const tunnelCrossDimension = settings.tunnelAxis === 'depth' ? settings.width : settings.depth;
   settings.tunnelWidth = clamp(settings.tunnelWidth, 0.8, Math.max(0.9, tunnelCrossDimension - 0.5));
-  settings.tunnelWallHeight = clamp(settings.tunnelWallHeight, 0.35, Math.max(0.45, settings.height * 0.52));
+  const tunnelHeightBasis = settings.profile === 'belowFloor' ? settings.heightAboveFloor + 0.35 : settings.height;
+  settings.tunnelWallHeight = clamp(settings.tunnelWallHeight, 0.35, Math.max(0.45, tunnelHeightBasis * 0.52));
   settings.tunnelRoundness = clamp(settings.tunnelRoundness, 0, 1.35);
   settings.tunnelGlassThickness = clamp(settings.tunnelGlassThickness, 0.025, 0.25);
   settings.tunnelCurveSegments = Math.round(clamp(settings.tunnelCurveSegments, 5, 24));
@@ -198,6 +281,8 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.portalFrameWidth = clamp(settings.portalFrameWidth, 0.04, 0.45);
   settings.portalFrameDepth = clamp(settings.portalFrameDepth, 0.04, 0.65);
   settings.tunnelWaterClearance = clamp(settings.tunnelWaterClearance, 0.005, 0.12);
+  settings.tunnelGlassFloor = Boolean(settings.tunnelGlassFloor);
+  settings.tunnelSideRimWidth = clamp(settings.tunnelSideRimWidth, 0.03, 0.35);
   const tunnelEdgeMargin = settings.glassThickness + settings.portalFrameWidth + settings.tunnelGlassThickness + 0.12;
   const maxTunnelOffset = Math.max(0, tunnelCrossDimension * 0.5 - settings.tunnelWidth * 0.5 - tunnelEdgeMargin);
   settings.tunnelOffset = clamp(settings.tunnelOffset, -maxTunnelOffset, maxTunnelOffset);

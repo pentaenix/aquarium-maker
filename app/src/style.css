@@ -474,3 +474,39 @@ input[type="number"]::-webkit-inner-spin-button { opacity: .45; }
 @media (max-width: 430px) {
   .ground-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Composable mode cards */
+.mode-grid {
+  display: grid;
+  gap: 6px;
+  padding: 9px 0 7px;
+}
+.footprint-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.profile-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mode-grid button {
+  min-width: 0;
+  min-height: 66px;
+  padding: 8px 7px;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid #dce5e8;
+  border-radius: 10px;
+  background: #fafcfc;
+  color: #4f6067;
+  cursor: pointer;
+}
+.mode-grid button:hover { border-color: #b8cdd5; }
+.mode-grid button.is-active { border-color: #83c6df; background: #edf8fc; color: #176f98; box-shadow: inset 0 0 0 1px rgba(39,143,190,.08); }
+.mode-grid strong { font-size: 10px; }
+.mode-grid small { font-size: 8px; line-height: 1.35; color: #7f8e94; }
+.shape-options[hidden], .profile-section[hidden], .below-tunnel-options[hidden] { display: none !important; }
+.shape-options { margin-top: 6px; padding-top: 6px; border-top: 1px solid #e5ecee; }
+.profile-section { margin-top: 10px; }
+.below-tunnel-options { margin: 8px 0; padding: 8px 10px; border: 1px solid #e1e8ea; border-radius: 10px; background: #f8fbfc; }
+.switch:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 520px) {
+  .footprint-grid, .profile-grid { grid-template-columns: 1fr; }
+  .mode-grid button { min-height: 54px; }
+}

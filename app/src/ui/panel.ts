@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import type { AquariumSettings, CornerMode, CornerRadii, GroundPreset, TunnelAxis } from '../model/settings';
-import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings } from '../model/settings';
-import { createFootprintLoop, offsetRadii } from '../model/aquarium';
+import type { AquariumProfile, AquariumSettings, CornerMode, CornerRadii, FootprintType, GroundPreset, TunnelAxis } from '../model/settings';
+import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, tunnelAllowed } from '../model/settings';
+import { createFootprintShapeLoop } from '../model/aquarium';
 
 export type SelectedCorner = keyof CornerRadii;
-type PanelTab = 'tank' | 'shape' | 'water' | 'tunnel' | 'details';
+type PanelTab = 'shape' | 'profile' | 'tunnel' | 'water' | 'ground' | 'export';
 
 export interface PanelCallbacks {
   onChange: (settings: AquariumSettings, structural: boolean) => void;
@@ -40,6 +40,17 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'width', label: 'Width', min: 2, max: 30, step: 0.1, unit: 'm', structural: true },
   { key: 'depth', label: 'Depth', min: 1, max: 15, step: 0.1, unit: 'm', structural: true },
   { key: 'height', label: 'Height', min: 1, max: 12, step: 0.1, unit: 'm', structural: true },
+  { key: 'heightAboveFloor', label: 'Above floor', min: 0.35, max: 6, step: 0.05, unit: 'm', structural: true },
+  { key: 'depthBelowFloor', label: 'Below floor depth', min: 0.2, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'floorRimHeight', label: 'Floor rim', min: 0.02, max: 0.35, step: 0.005, unit: 'm', structural: true },
+  { key: 'lArmWidth', label: 'L vertical arm', min: 0.6, max: 24, step: 0.05, unit: 'm', structural: true },
+  { key: 'lRearDepth', label: 'L rear arm', min: 0.6, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'uLeftArmWidth', label: 'U left arm', min: 0.45, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'uRightArmWidth', label: 'U right arm', min: 0.45, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'uBackDepth', label: 'U bridge depth', min: 0.55, max: 12, step: 0.05, unit: 'm', structural: true },
+  { key: 'touchRimWidth', label: 'Touch rim width', min: 0.08, max: 2, step: 0.01, unit: 'm', structural: true },
+  { key: 'touchPedestalHeight', label: 'Pedestal height', min: 0, max: 4, step: 0.05, unit: 'm', structural: true },
+  { key: 'touchBasinInset', label: 'Basin inset', min: 0.05, max: 2, step: 0.05, unit: 'm', structural: true },
   { key: 'waterLevel', label: 'Water level', min: 0.2, max: 0.97, step: 0.01, structural: true, format: percent },
   { key: 'waterTint', label: 'Side tint', min: 0, max: 1, step: 0.01, format: percent },
   { key: 'waveStrength', label: 'Wave definition', min: 0, max: 1, step: 0.01, format: percent },
@@ -65,6 +76,7 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'portalFrameWidth', label: 'Portal border', min: 0.04, max: 0.45, step: 0.005, unit: 'm', structural: true },
   { key: 'portalFrameDepth', label: 'Portal depth', min: 0.04, max: 0.65, step: 0.005, unit: 'm', structural: true },
   { key: 'tunnelWaterClearance', label: 'Water clearance', min: 0.005, max: 0.12, step: 0.005, unit: 'm', structural: true },
+  { key: 'tunnelSideRimWidth', label: 'Side rim width', min: 0.03, max: 0.35, step: 0.005, unit: 'm', structural: true },
   { key: 'exportScale', label: 'Units per meter', min: 1, max: 100, step: 1, format: (value) => `${Math.round(value)}×` },
 ];
 
@@ -87,7 +99,7 @@ function rangeMarkup(id: string): string {
     </div>`;
 }
 
-function colorMarkup(key: 'waterColor' | 'sandColor', label: string): string {
+function colorMarkup(key: 'waterColor' | 'sandColor' | 'subFloorBodyColor', label: string): string {
   return `
     <div class="color-row">
       <label for="${key}-color">${label}</label>
@@ -108,7 +120,7 @@ export class ControlPanel {
   private readonly callbacks: PanelCallbacks;
   private selectedCorner: SelectedCorner = 'frontLeft';
   private linkCorners = false;
-  private activeTab: PanelTab = 'tank';
+  private activeTab: PanelTab = 'shape';
 
   constructor(root: HTMLElement, settings: AquariumSettings, callbacks: PanelCallbacks) {
     this.root = root;
@@ -126,11 +138,12 @@ export class ControlPanel {
 
   private render(): void {
     const tabs: Array<[PanelTab, string, string]> = [
-      ['tank', 'Tank', 'M4 5h16v14H4zM4 13c4-2 7 2 11 0 2-1 4-1 5 0'],
-      ['shape', 'Corners', 'M5 19V9a4 4 0 0 1 4-4h10v14Z'],
-      ['water', 'Water', 'M3 15c3-3 6 3 9 0s6 3 9 0M4 9c3-3 5 2 8 0s5 3 8 0'],
+      ['shape', 'Shape', 'M5 19V9a4 4 0 0 1 4-4h10v14Z'],
+      ['profile', 'Profile', 'M6 20V6h12v14M6 12h12M10 6v14'],
       ['tunnel', 'Tunnel', 'M4 19V11a8 8 0 0 1 16 0v8M8 19v-8a4 4 0 0 1 8 0v8'],
-      ['details', 'Details', 'M4 7h16M4 12h16M4 17h16M8 5v4m8 1v4m-6 1v4'],
+      ['water', 'Water', 'M3 15c3-3 6 3 9 0s6 3 9 0M4 9c3-3 5 2 8 0s5 3 8 0'],
+      ['ground', 'Ground', 'M4 17c4-2 8-2 16 0M5 13c5-2 9-2 14 0M7 9h10'],
+      ['export', 'Export', 'M4 7h16M4 12h16M4 17h16M8 5v4m8 1v4m-6 1v4'],
     ];
 
     this.root.innerHTML = `
@@ -138,22 +151,18 @@ export class ControlPanel {
         ${tabs.map(([id, label, icon]) => `<button type="button" data-tab="${id}" class="${id === this.activeTab ? 'is-active' : ''}"><svg viewBox="0 0 24 24"><path d="${icon}" /></svg><span>${label}</span></button>`).join('')}
       </nav>
       <div class="tab-stage">
-        <section class="tab-pane" data-tab-panel="tank">
-          ${card('Tank size', 'Authored dimensions in meters', `${rangeMarkup('width')}${rangeMarkup('depth')}${rangeMarkup('height')}<p class="section-note">The preview stays in meters. The game-unit scale is only applied to the downloaded GLB.</p>`)}
-          ${card('Ground', 'Choose a ready-made substrate, then fine-tune it', `
-            <div class="ground-presets" role="group" aria-label="Ground material presets">
-              <button type="button" data-ground-preset="sand"><span class="ground-swatch ground-sand"></span><strong>Sand</strong><small>Warm and clean</small></button>
-              <button type="button" data-ground-preset="dirt"><span class="ground-swatch ground-dirt"></span><strong>Dirt</strong><small>Dark and natural</small></button>
-              <button type="button" data-ground-preset="algae"><span class="ground-swatch ground-algae"></span><strong>Algae</strong><small>Organic green</small></button>
-              <button type="button" data-ground-preset="gravel"><span class="ground-swatch ground-gravel"></span><strong>Gravel</strong><small>Coarse stones</small></button>
+        <section class="tab-pane" data-tab-panel="shape">
+          ${card('Footprint', 'Choose the tank plan before tuning details', `
+            <div class="mode-grid footprint-grid" role="group" aria-label="Footprint type">
+              <button type="button" data-footprint="rectangle"><strong>Rectangle</strong><small>Python-style rounded exhibit</small></button>
+              <button type="button" data-footprint="lShape"><strong>L shape</strong><small>Concave corner tank</small></button>
+              <button type="button" data-footprint="uShape"><strong>U shape</strong><small>Three-sided island layout</small></button>
             </div>
-            ${colorMarkup('sandColor', 'Ground color')}${rangeMarkup('sandVariation')}${rangeMarkup('sandGrain')}
-            <button class="secondary-action" id="randomize-sand" type="button"><svg viewBox="0 0 24 24"><path d="M4 7h3l10 10h3M4 17h3l3-3m4-4 3-3h3m0 0-2-2m2 2-2 2m2 8-2-2m2 2-2 2" /></svg>Randomize pattern</button>
+            ${rangeMarkup('width')}${rangeMarkup('depth')}${rangeMarkup('height')}
+            <div class="shape-options" id="l-shape-options">${rangeMarkup('lArmWidth')}${rangeMarkup('lRearDepth')}</div>
+            <div class="shape-options" id="u-shape-options">${rangeMarkup('uLeftArmWidth')}${rangeMarkup('uRightArmWidth')}${rangeMarkup('uBackDepth')}</div>
           `)}
-        </section>
-
-        <section class="tab-pane" data-tab-panel="shape" hidden>
-          ${card('Corner designer', 'Each corner can be rounded, faceted, or square', `
+          ${card('Corner designer', 'Rectangle corners can be rounded, faceted, or square', `
             <div class="corner-editor">
               <div class="corner-canvas-wrap">
                 <svg id="corner-preview" viewBox="0 0 240 150" role="img" aria-label="Interactive top view of the aquarium footprint">
@@ -189,30 +198,35 @@ export class ControlPanel {
               <div id="corner-radius-control"><input class="corner-range" id="corner-range" type="range" min="0.01" max="2" step="0.01" /></div>
               <div class="corner-values" id="corner-values"></div>
             </div>
-            <p class="section-note">One shared footprint drives the acrylic, both rims, sand, water, and tunnel openings, so every layer stays aligned.</p>
+            <p class="section-note" id="corner-compat-note">One shared footprint drives the acrylic, rims, ground, water, and tunnel openings.</p>
             ${rangeMarkup('curveSegments')}
           `)}
         </section>
 
-        <section class="tab-pane" data-tab-panel="water" hidden>
-          ${card('Water body', 'Color, fill level, and depth tint', `${colorMarkup('waterColor', 'Water color')}${rangeMarkup('waterLevel')}${rangeMarkup('waterTint')}<p class="section-note">Side tint controls how quickly the blue builds up while looking through the tank.</p>`)}
-          ${card('Top surface', 'Move from restrained realism to graphic water', `
-            <div class="water-style-presets" role="group" aria-label="Water surface style">
-              <button type="button" data-water-preset="realistic"><span class="water-swatch water-realistic"></span><strong>Realistic</strong><small>Subtle, clear</small></button>
-              <button type="button" data-water-preset="balanced"><span class="water-swatch water-balanced"></span><strong>Balanced</strong><small>Readable detail</small></button>
-              <button type="button" data-water-preset="cartoon"><span class="water-swatch water-cartoon"></span><strong>Cartoon</strong><small>Broad color bands</small></button>
+        <section class="tab-pane" data-tab-panel="profile" hidden>
+          ${card('Vertical profile', 'Pick how the tank relates to the game floor', `
+            <div class="mode-grid profile-grid" role="group" aria-label="Aquarium profile">
+              <button type="button" data-profile="standard"><strong>Standard</strong><small>Freestanding public aquarium</small></button>
+              <button type="button" data-profile="belowFloor"><strong>Below floor</strong><small>Negative-Z body, normal floor rim</small></button>
+              <button type="button" data-profile="touchPool"><strong>Touch pool</strong><small>Shallow open basin, no tunnel</small></button>
             </div>
-            ${rangeMarkup('waterSurfaceStyle')}
-            ${rangeMarkup('waveStrength')}
-            ${rangeMarkup('waterWaveScale')}
-            <p class="section-note">The exported GLB contains the generated color and normal textures—no external image files are required.</p>
+            <p class="section-note" id="profile-note">The exported GLB never includes a floor polygon. Your game floor owns Z = 0.</p>
           `)}
+          <div class="profile-section" id="standard-profile-section">
+            ${card('Standard structure', 'Slim base and aquarium walls', `${rangeMarkup('baseHeight')}${rangeMarkup('bottomRimHeight')}${rangeMarkup('topRimHeight')}${rangeMarkup('glassThickness')}`)}
+          </div>
+          <div class="profile-section" id="below-profile-section">
+            ${card('Below-floor structure', 'Opaque sub-floor body with transparent viewing above Z = 0', `${rangeMarkup('heightAboveFloor')}${rangeMarkup('depthBelowFloor')}${rangeMarkup('floorRimHeight')}${colorMarkup('subFloorBodyColor', 'Sub-floor body')}${rangeMarkup('glassThickness')}`)}
+          </div>
+          <div class="profile-section" id="touch-profile-section">
+            ${card('Touch pool structure', 'Broad rim, shallow water, optional pedestal', `${rangeMarkup('touchRimWidth')}${rangeMarkup('touchPedestalHeight')}${rangeMarkup('touchBasinInset')}${rangeMarkup('topRimHeight')}`)}
+          </div>
         </section>
 
         <section class="tab-pane" data-tab-panel="tunnel" hidden>
-          ${card('Walk-through tunnel', 'Place a dry passage on either tank axis', `
+          ${card('Walk-through tunnel', 'Available for rectangle standard and below-floor tanks', `
             <div class="feature-toggle-card">
-              <div><strong>Enable tunnel</strong><span>Cut through the base, sand, end panes, and water volume</span></div>
+              <div><strong>Enable tunnel</strong><span id="tunnel-availability">Cut through the base, ground, end panes, and water volume</span></div>
               <button class="switch switch-large" id="tunnel-enabled" type="button" role="switch" aria-checked="false"><span></span></button>
             </div>
             <div class="tunnel-editor" id="tunnel-editor">
@@ -231,23 +245,50 @@ export class ControlPanel {
                 </svg>
                 <div class="tunnel-off-message"><strong>Tunnel is off</strong><span>Enable it to edit the passage.</span></div>
               </div>
-              ${rangeMarkup('tunnelWidth')}
-              ${rangeMarkup('tunnelOffset')}
-              ${rangeMarkup('tunnelWallHeight')}
+              ${rangeMarkup('tunnelWidth')}${rangeMarkup('tunnelOffset')}${rangeMarkup('tunnelWallHeight')}
               <div class="tunnel-shape-presets" role="group" aria-label="Tunnel roof presets">
                 <button type="button" data-tunnel-shape="square"><span class="tunnel-shape-icon shape-square"></span><strong>Square</strong></button>
                 <button type="button" data-tunnel-shape="soft"><span class="tunnel-shape-icon shape-soft"></span><strong>Soft</strong></button>
                 <button type="button" data-tunnel-shape="arch"><span class="tunnel-shape-icon shape-arch"></span><strong>Arch</strong></button>
               </div>
               ${rangeMarkup('tunnelRoundness')}
+              <div class="below-tunnel-options" id="below-tunnel-options">
+                <div class="toggle-row"><div><strong>Glass floor</strong><span>Recommended for below-floor tunnel tanks</span></div><button class="switch" id="tunnel-glass-floor" type="button" role="switch" aria-checked="true"><span></span></button></div>
+                ${rangeMarkup('tunnelSideRimWidth')}
+              </div>
               <details class="advanced-details"><summary>Advanced tunnel fit</summary><div>${rangeMarkup('tunnelGlassThickness')}${rangeMarkup('portalFrameWidth')}${rangeMarkup('portalFrameDepth')}${rangeMarkup('tunnelEndExtension')}${rangeMarkup('tunnelWaterClearance')}${rangeMarkup('tunnelCurveSegments')}</div></details>
-              <p class="section-note">The passage has no floor mesh. Water is generated as one continuous volume around the selected tunnel profile.</p>
+              <p class="section-note">Below-floor tunnel tanks add a named glass floor and side rims. Touch pools and L/U footprints intentionally disable tunnels for now.</p>
             </div>
           `, 'tunnel-card')}
         </section>
 
-        <section class="tab-pane" data-tab-panel="details" hidden>
-          ${card('Structure', 'Slim frame and acrylic fit', `${rangeMarkup('baseHeight')}${rangeMarkup('bottomRimHeight')}${rangeMarkup('topRimHeight')}${rangeMarkup('glassThickness')}<details class="advanced-details"><summary>Advanced fit</summary><div>${rangeMarkup('baseOverhang')}${rangeMarkup('frameOverhang')}${rangeMarkup('frameOverlap')}</div></details>`)}
+        <section class="tab-pane" data-tab-panel="water" hidden>
+          ${card('Water body', 'Color, fill level, and depth tint', `${colorMarkup('waterColor', 'Water color')}${rangeMarkup('waterLevel')}${rangeMarkup('waterTint')}<p class="section-note">Side tint controls how quickly the blue builds up while looking through the tank.</p>`)}
+          ${card('Top surface', 'Move from restrained realism to graphic water', `
+            <div class="water-style-presets" role="group" aria-label="Water surface style">
+              <button type="button" data-water-preset="realistic"><span class="water-swatch water-realistic"></span><strong>Realistic</strong><small>Subtle, clear</small></button>
+              <button type="button" data-water-preset="balanced"><span class="water-swatch water-balanced"></span><strong>Balanced</strong><small>Readable detail</small></button>
+              <button type="button" data-water-preset="cartoon"><span class="water-swatch water-cartoon"></span><strong>Cartoon</strong><small>Broad color bands</small></button>
+            </div>
+            ${rangeMarkup('waterSurfaceStyle')}${rangeMarkup('waveStrength')}${rangeMarkup('waterWaveScale')}
+          `)}
+        </section>
+
+        <section class="tab-pane" data-tab-panel="ground" hidden>
+          ${card('Ground', 'Choose a ready-made substrate, then fine-tune it', `
+            <div class="ground-presets" role="group" aria-label="Ground material presets">
+              <button type="button" data-ground-preset="sand"><span class="ground-swatch ground-sand"></span><strong>Sand</strong><small>Warm and clean</small></button>
+              <button type="button" data-ground-preset="dirt"><span class="ground-swatch ground-dirt"></span><strong>Dirt</strong><small>Dark and natural</small></button>
+              <button type="button" data-ground-preset="algae"><span class="ground-swatch ground-algae"></span><strong>Algae</strong><small>Organic green</small></button>
+              <button type="button" data-ground-preset="gravel"><span class="ground-swatch ground-gravel"></span><strong>Gravel</strong><small>Coarse stones</small></button>
+            </div>
+            ${colorMarkup('sandColor', 'Ground color')}${rangeMarkup('sandVariation')}${rangeMarkup('sandGrain')}
+            <button class="secondary-action" id="randomize-sand" type="button"><svg viewBox="0 0 24 24"><path d="M4 7h3l10 10h3M4 17h3l3-3m4-4 3-3h3m0 0-2-2m2 2-2 2m2 8-2-2m2 2-2 2" /></svg>Randomize pattern</button>
+          `)}
+        </section>
+
+        <section class="tab-pane" data-tab-panel="export" hidden>
+          ${card('Structure details', 'Advanced fit controls', `${rangeMarkup('baseOverhang')}${rangeMarkup('frameOverhang')}${rangeMarkup('frameOverlap')}`)}
           ${card('Export', 'GLB size and game units', `${rangeMarkup('exportScale')}<div class="export-summary"><svg viewBox="0 0 24 24"><path d="M4 18 12 4l8 14M7 18h10" /></svg><div><strong id="export-dimensions">—</strong><span>Final dimensions after export scaling</span></div></div>`)}
         </section>
       </div>`;
@@ -258,6 +299,24 @@ export class ControlPanel {
       button.addEventListener('click', () => {
         this.activeTab = button.dataset.tab as PanelTab;
         this.refreshTabs();
+      });
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-profile]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.settings.profile = button.dataset.profile as AquariumProfile;
+        normalizeSettings(this.settings);
+        this.refresh();
+        this.callbacks.onChange(this.settings, true);
+      });
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-footprint]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.settings.footprint = button.dataset.footprint as FootprintType;
+        normalizeSettings(this.settings);
+        this.refresh();
+        this.callbacks.onChange(this.settings, true);
       });
     });
 
@@ -272,12 +331,12 @@ export class ControlPanel {
     });
 
     this.root.querySelectorAll<HTMLInputElement>('[data-color-key]').forEach((input) => {
-      input.addEventListener('input', () => this.applyColor(input.dataset.colorKey as 'waterColor' | 'sandColor', input.value));
+      input.addEventListener('input', () => this.applyColor(input.dataset.colorKey as 'waterColor' | 'sandColor' | 'subFloorBodyColor', input.value));
     });
     this.root.querySelectorAll<HTMLInputElement>('[data-color-text-key]').forEach((input) => {
       input.addEventListener('change', () => {
         const value = input.value.trim();
-        if (/^#[0-9a-f]{6}$/i.test(value)) this.applyColor(input.dataset.colorTextKey as 'waterColor' | 'sandColor', value);
+        if (/^#[0-9a-f]{6}$/i.test(value)) this.applyColor(input.dataset.colorTextKey as 'waterColor' | 'sandColor' | 'subFloorBodyColor', value);
         else this.refresh();
       });
     });
@@ -338,9 +397,17 @@ export class ControlPanel {
     });
 
     this.root.querySelector<HTMLButtonElement>('#tunnel-enabled')!.addEventListener('click', () => {
+      if (!tunnelAllowed(this.settings)) return;
       this.settings.tunnelEnabled = !this.settings.tunnelEnabled;
+      normalizeSettings(this.settings);
       this.refreshTunnelEditor();
       this.refreshCornerEditor();
+      this.callbacks.onChange(this.settings, true);
+    });
+
+    this.root.querySelector<HTMLButtonElement>('#tunnel-glass-floor')!.addEventListener('click', () => {
+      this.settings.tunnelGlassFloor = !this.settings.tunnelGlassFloor;
+      this.refreshTunnelEditor();
       this.callbacks.onChange(this.settings, true);
     });
 
@@ -435,7 +502,7 @@ export class ControlPanel {
     this.callbacks.onChange(this.settings, Boolean(definition.structural));
   }
 
-  private applyColor(key: 'waterColor' | 'sandColor', value: string): void {
+  private applyColor(key: 'waterColor' | 'sandColor' | 'subFloorBodyColor', value: string): void {
     this.settings[key] = value.toLowerCase();
     this.refresh();
     this.callbacks.onChange(this.settings, false);
@@ -473,12 +540,13 @@ export class ControlPanel {
       if (output) output.textContent = this.formatValue(definition, value);
     }
 
-    for (const key of ['waterColor', 'sandColor'] as const) {
+    for (const key of ['waterColor', 'sandColor', 'subFloorBodyColor'] as const) {
       this.root.querySelector<HTMLInputElement>(`[data-color-key="${key}"]`)!.value = this.settings[key];
       this.root.querySelector<HTMLInputElement>(`[data-color-text-key="${key}"]`)!.value = this.settings[key].toUpperCase();
     }
 
     this.refreshTabs();
+    this.refreshProfileAndFootprint();
     this.refreshCornerEditor();
     this.refreshGroundPreset();
     this.refreshWaterStyle();
@@ -490,6 +558,33 @@ export class ControlPanel {
   private refreshTabs(): void {
     this.root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((button) => button.classList.toggle('is-active', button.dataset.tab === this.activeTab));
     this.root.querySelectorAll<HTMLElement>('[data-tab-panel]').forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== this.activeTab; });
+  }
+
+  private refreshProfileAndFootprint(): void {
+    this.root.querySelectorAll<HTMLButtonElement>('[data-profile]').forEach((button) => {
+      button.classList.toggle('is-active', button.dataset.profile === this.settings.profile);
+    });
+    this.root.querySelectorAll<HTMLButtonElement>('[data-footprint]').forEach((button) => {
+      button.classList.toggle('is-active', button.dataset.footprint === this.settings.footprint);
+    });
+
+    const below = this.settings.profile === 'belowFloor';
+    const touch = this.settings.profile === 'touchPool';
+    this.root.querySelector<HTMLElement>('#standard-profile-section')!.hidden = below || touch;
+    this.root.querySelector<HTMLElement>('#below-profile-section')!.hidden = !below;
+    this.root.querySelector<HTMLElement>('#touch-profile-section')!.hidden = !touch;
+    this.root.querySelector<HTMLElement>('#l-shape-options')!.hidden = this.settings.footprint !== 'lShape';
+    this.root.querySelector<HTMLElement>('#u-shape-options')!.hidden = this.settings.footprint !== 'uShape';
+
+    const profileNote = this.root.querySelector<HTMLElement>('#profile-note')!;
+    if (below) profileNote.textContent = 'The tank extends into negative Z. No floor polygon is exported; only the normal floor rim is part of the GLB.';
+    else if (touch) profileNote.textContent = 'Touch pools are shallow open basins. Tunnels and below-floor behavior are disabled for this profile.';
+    else profileNote.textContent = 'Freestanding aquarium profile with a slim base, transparent acrylic shell, and open top.';
+
+    const cornerNote = this.root.querySelector<HTMLElement>('#corner-compat-note')!;
+    cornerNote.textContent = this.settings.footprint === 'rectangle'
+      ? 'One shared rounded footprint drives the acrylic, rims, ground, water, and tunnel openings.'
+      : 'L and U footprints use a clean concave outline. Rectangle-only tunnel controls are disabled for these shapes.';
   }
 
   private refreshGroundPreset(): void {
@@ -505,15 +600,27 @@ export class ControlPanel {
   }
 
   private refreshTunnelEditor(): void {
+    const allowed = tunnelAllowed(this.settings);
     const button = this.root.querySelector<HTMLButtonElement>('#tunnel-enabled')!;
-    button.setAttribute('aria-checked', String(this.settings.tunnelEnabled));
-    button.classList.toggle('is-on', this.settings.tunnelEnabled);
+    button.disabled = !allowed;
+    button.setAttribute('aria-checked', String(this.settings.tunnelEnabled && allowed));
+    button.classList.toggle('is-on', this.settings.tunnelEnabled && allowed);
+    const availability = this.root.querySelector<HTMLElement>('#tunnel-availability')!;
+    availability.textContent = allowed
+      ? 'Cut through the base, ground, end panes, and water volume'
+      : this.settings.profile === 'touchPool'
+        ? 'Touch pools are open shallow basins, so tunnels are disabled'
+        : 'Tunnels are currently available for rectangle footprints only';
     const editor = this.root.querySelector<HTMLElement>('#tunnel-editor')!;
-    editor.classList.toggle('is-disabled', !this.settings.tunnelEnabled);
+    editor.classList.toggle('is-disabled', !this.settings.tunnelEnabled || !allowed);
 
     this.root.querySelectorAll<HTMLButtonElement>('[data-tunnel-axis]').forEach((axisButton) => {
       axisButton.classList.toggle('is-active', axisButton.dataset.tunnelAxis === this.settings.tunnelAxis);
     });
+    this.root.querySelector<HTMLElement>('#below-tunnel-options')!.hidden = this.settings.profile !== 'belowFloor';
+    const glassFloorButton = this.root.querySelector<HTMLButtonElement>('#tunnel-glass-floor')!;
+    glassFloorButton.setAttribute('aria-checked', String(this.settings.tunnelGlassFloor));
+    glassFloorButton.classList.toggle('is-on', this.settings.tunnelGlassFloor);
     const depthAxis = this.settings.tunnelAxis === 'depth';
     this.root.querySelector<HTMLElement>('#tunnel-entrance-label')!.innerHTML = depthAxis
       ? '<b>01</b> Entrance · Front'
@@ -592,22 +699,10 @@ export class ControlPanel {
     const centerY = 70;
     const pathFrom = (points: THREE.Vector2[]) => `${points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${(centerX + point.x * scale).toFixed(2)} ${(centerY + point.y * scale).toFixed(2)}`).join(' ')} Z`;
 
-    const body = createFootprintLoop(this.settings.width, this.settings.depth, this.settings.radii, this.settings.cornerModes, this.settings.curveSegments);
-    const frame = createFootprintLoop(
-      outerWidth,
-      outerDepth,
-      offsetRadii(this.settings.radii, this.settings.frameOverhang),
-      this.settings.cornerModes,
-      this.settings.curveSegments,
-    );
+    const body = createFootprintShapeLoop(this.settings, 0);
+    const frame = createFootprintShapeLoop(this.settings, this.settings.frameOverhang);
     const waterInset = this.settings.glassThickness + this.settings.waterWallGap;
-    const water = createFootprintLoop(
-      this.settings.width - waterInset * 2,
-      this.settings.depth - waterInset * 2,
-      offsetRadii(this.settings.radii, -waterInset),
-      this.settings.cornerModes,
-      this.settings.curveSegments,
-    );
+    const water = createFootprintShapeLoop(this.settings, -waterInset);
     this.root.querySelector<SVGPathElement>('#corner-preview-frame')!.setAttribute('d', pathFrom(frame));
     this.root.querySelector<SVGPathElement>('#corner-preview-path')!.setAttribute('d', pathFrom(body));
     this.root.querySelector<SVGPathElement>('#corner-preview-water')!.setAttribute('d', pathFrom(water));

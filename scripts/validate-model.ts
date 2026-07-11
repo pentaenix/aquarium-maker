@@ -70,3 +70,37 @@ squareTunnel.tunnelRoundness = 0;
 squareTunnel.tunnelOffset = -0.6;
 squareTunnel.groundPreset = 'gravel';
 validate('square-offset-gravel-tunnel', squareTunnel);
+
+const below = cloneSettings(DEFAULT_SETTINGS);
+below.profile = 'belowFloor';
+below.heightAboveFloor = 1.12;
+below.depthBelowFloor = 3.35;
+validate('below-floor', below);
+
+const belowTunnel = cloneSettings(DEFAULT_SETTINGS);
+belowTunnel.profile = 'belowFloor';
+belowTunnel.tunnelEnabled = true;
+belowTunnel.heightAboveFloor = 1.12;
+belowTunnel.depthBelowFloor = 3.35;
+belowTunnel.tunnelGlassFloor = true;
+validate('below-floor-tunnel', belowTunnel);
+
+const lShape = cloneSettings(DEFAULT_SETTINGS);
+lShape.footprint = 'lShape';
+lShape.width = 10.4;
+lShape.depth = 7.4;
+validate('l-shape-standard', lShape);
+
+const uShape = cloneSettings(DEFAULT_SETTINGS);
+uShape.footprint = 'uShape';
+uShape.width = 11.2;
+uShape.depth = 7.2;
+validate('u-shape-standard', uShape);
+
+const touchL = cloneSettings(DEFAULT_SETTINGS);
+touchL.profile = 'touchPool';
+touchL.footprint = 'lShape';
+touchL.height = 1.55;
+touchL.width = 7.4;
+touchL.depth = 5.1;
+validate('l-shape-touch-pool', touchL);

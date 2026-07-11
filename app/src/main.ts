@@ -6,7 +6,7 @@ import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aq
 import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, type AquariumSettings } from './model/settings';
 import { ControlPanel } from './ui/panel';
 
-const STORAGE_KEY = 'aquarium-maker-settings-v5';
+const STORAGE_KEY = 'aquarium-maker-settings-v6-composable';
 
 type CameraView = 'iso' | 'front' | 'side' | 'top' | 'fit';
 
@@ -146,7 +146,7 @@ scene.add(keyLight);
 
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(120, 120),
-  new THREE.MeshStandardMaterial({ color: 0xe9eef0, roughness: 1, metalness: 0 }),
+  new THREE.MeshStandardMaterial({ color: 0xe9eef0, roughness: 1, metalness: 0, transparent: true, opacity: 0.28, depthWrite: false }),
 );
 ground.rotation.x = -Math.PI / 2;
 ground.position.y = -0.003;
@@ -160,8 +160,12 @@ let firstBuild = true;
 let cameraAnimationToken = 0;
 
 function updateStats(): void {
+  const visibleHeight = settings.profile === 'belowFloor'
+    ? settings.heightAboveFloor + settings.depthBelowFloor
+    : settings.height;
+  const profileLabel = settings.profile === 'belowFloor' ? 'below floor' : settings.profile === 'touchPool' ? 'touch pool' : 'standard';
   requireElement<HTMLElement>('#dimension-stat').textContent =
-    `${settings.width.toFixed(1)} × ${settings.depth.toFixed(1)} × ${settings.height.toFixed(1)} m`;
+    `${settings.width.toFixed(1)} × ${settings.depth.toFixed(1)} × ${visibleHeight.toFixed(1)} m · ${profileLabel}`;
   requireElement<HTMLElement>('#triangle-stat').textContent =
     `${currentBuild?.triangles.toLocaleString() ?? '—'} triangles`;
   scaleBadge.textContent = `Preview in meters · export ${Math.round(settings.exportScale)}×`;
