@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Local development launcher. Vite keeps this process open and hot-reloads
+# application changes, so editing files does not require restarting ./run.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js is required. Install the current Node.js LTS release, then run ./run again." >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required. Reinstall Node.js with npm, then run ./run again." >&2
+  exit 1
+fi
+
+needs_install=false
+if [[ ! -x node_modules/.bin/vite || ! -x node_modules/.bin/tsc ]]; then
+  needs_install=true
+elif ! npm ls --depth=0 --silent >/dev/null 2>&1; then
+  needs_install=true
+elif [[ package-lock.json -nt node_modules/.package-lock.json ]]; then
+  needs_install=true
+fi
+
+if [[ "$needs_install" == true ]]; then
+  echo "Installing local dependencies from package-lock.json…"
+  # The lockfile uses the public registry so the project works outside the
+  # original build environment as well.
+  npm ci --include=dev --registry=https://registry.npmjs.org/
+else
+  echo "Local dependencies are ready."
+fi
+
+echo "Starting Aquarium Maker with hot reload. Press Ctrl-C to stop."
+exec npm run dev -- "$@"

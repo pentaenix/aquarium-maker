@@ -124,7 +124,6 @@ const PASSAGE_RANGES: PassageRangeDefinition[] = [
   { key: 'alcoveDepth', label: 'Alcove depth', min: 0.6, max: 10, step: 0.05, unit: 'm' },
   { key: 'wallHeight', label: 'Straight wall height', min: 0.35, max: 5, step: 0.05, unit: 'm' },
   { key: 'roundness', label: 'Roof shape', min: 0, max: 1.35, step: 0.01, format: tunnelShapeLabel },
-  { key: 'bendRadius', label: 'L-corner radius', min: 0, max: 6, step: 0.05, unit: 'm' },
   { key: 'glassThickness', label: 'Passage acrylic', min: 0.025, max: 0.25, step: 0.005, unit: 'm' },
   { key: 'curveSegments', label: 'Arch quality', min: 5, max: 24, step: 1, format: (value) => `${Math.round(value)} segments` },
   { key: 'endExtension', label: 'Portal extension', min: 0, max: 0.8, step: 0.01, unit: 'm' },
@@ -161,8 +160,8 @@ function colorMarkup(key: 'waterColor' | 'sandColor' | 'subFloorBodyColor' | 'so
   return `<div class="color-row"><label for="${key}-color">${label}</label><div class="color-control"><input id="${key}-color" data-color-key="${key}" type="color" /><input id="${key}-text" data-color-text-key="${key}" type="text" maxlength="7" spellcheck="false" /></div></div>`;
 }
 
-function card(title: string, subtitle: string, content: string): string {
-  return `<section class="control-card"><header><strong>${title}</strong><span>${subtitle}</span></header><div class="control-card-body">${content}</div></section>`;
+function card(title: string, _subtitle: string, content: string): string {
+  return `<section class="control-card"><header><strong>${title}</strong></header><div class="control-card-body">${content}</div></section>`;
 }
 
 const RECTANGLE_KEYS: Array<keyof CornerRadii> = ['frontLeft', 'frontRight', 'backRight', 'backLeft'];
@@ -174,7 +173,7 @@ function cornerShortLabel(key: SelectedCorner): string {
     lBackLeft: 'BL', lBackRight: 'BR', lOuterRight: 'OR', lInnerElbow: 'IN', lFrontRight: 'VE', lFrontLeft: 'FL',
     uBackLeft: 'BL', uBackRight: 'BR', uFrontRight: 'RE', uMouthRight: 'RI', uInnerRight: 'IR', uInnerLeft: 'IL', uMouthLeft: 'LI', uFrontLeft: 'LE',
   };
-  return labels[key] ?? '•';
+  return labels[key] ?? '?';
 }
 
 const SIDES: PassageSide[] = ['front', 'back', 'left', 'right'];
@@ -292,7 +291,7 @@ export class ControlPanel {
         <section class="tab-pane" data-tab-panel="passages" hidden>
           ${card('Passage network', 'Add several straight tunnels, one-bend L tunnels, or one-ended viewing alcoves', `
             <div id="passage-incompatible" class="compatibility-banner" hidden>Touch pools intentionally do not support passages. Your passage list is preserved if you switch back.</div>
-            <div class="passage-add-row"><button type="button" data-add-passage="straight"><span>＋</span><strong>Straight tunnel</strong></button><button type="button" data-add-passage="elbow"><span>⌞</span><strong>L tunnel</strong></button><button type="button" data-add-passage="alcove"><span>◧</span><strong>Viewing alcove</strong></button></div>
+            <div class="passage-add-row"><button type="button" data-add-passage="straight"><strong>Straight tunnel</strong></button><button type="button" data-add-passage="elbow"><strong>L tunnel</strong></button><button type="button" data-add-passage="alcove"><strong>Viewing alcove</strong></button></div>
             <div class="passage-list" id="passage-list"></div>
             <div class="empty-passage-state" id="empty-passage-state"><strong>No passages yet</strong><span>Add one above. Multiple directions and separate U arms are supported.</span></div>
           `)}
@@ -304,7 +303,7 @@ export class ControlPanel {
               <div class="shape-subheading"><strong>Entrance wall</strong><span>World-facing side of the tank</span></div><div class="side-selector" id="entry-side-selector">${SIDES.map((side) => `<button type="button" data-entry-side="${side}">${SIDE_LABELS[side]}</button>`).join('')}</div>
               <div id="exit-side-block"><div class="shape-subheading"><strong>Exit wall</strong><span id="exit-side-hint">Opposite for straight tunnels; adjacent for L tunnels</span></div><div class="side-selector" id="exit-side-selector">${SIDES.map((side) => `<button type="button" data-exit-side="${side}">${SIDE_LABELS[side]}</button>`).join('')}</div></div>
               ${passageRangeMarkup('width')}${passageRangeMarkup('entryOffset')}<div id="passage-exit-offset">${passageRangeMarkup('exitOffset')}</div><div id="passage-alcove-depth">${passageRangeMarkup('alcoveDepth')}</div>${passageRangeMarkup('wallHeight')}
-              <div class="tunnel-shape-presets"><button type="button" data-passage-shape="square"><span class="tunnel-shape-icon shape-square"></span><strong>Square</strong></button><button type="button" data-passage-shape="soft"><span class="tunnel-shape-icon shape-soft"></span><strong>Soft</strong></button><button type="button" data-passage-shape="arch"><span class="tunnel-shape-icon shape-arch"></span><strong>Arch</strong></button></div>${passageRangeMarkup('roundness')}<div id="passage-bend-radius">${passageRangeMarkup('bendRadius')}</div>
+              <div class="tunnel-shape-presets"><button type="button" data-passage-shape="square"><span class="tunnel-shape-icon shape-square"></span><strong>Square</strong></button><button type="button" data-passage-shape="soft"><span class="tunnel-shape-icon shape-soft"></span><strong>Soft</strong></button><button type="button" data-passage-shape="arch"><span class="tunnel-shape-icon shape-arch"></span><strong>Arch</strong></button></div>${passageRangeMarkup('roundness')}
               <div id="passage-bridge-options"><div class="toggle-row"><div><strong>Acrylic bridge floor</strong><span>Water and substrate continue below the walkable floor</span></div><button class="switch" id="passage-glass-floor" type="button" role="switch"><span></span></button></div>${passageRangeMarkup('sideRimWidth')}${passageRangeMarkup('bridgeRimHeight')}${passageRangeMarkup('separatorSpacing')}${passageRangeMarkup('separatorWidth')}</div>
               <details class="advanced-block"><summary>Advanced passage geometry</summary>${passageRangeMarkup('glassThickness')}${passageRangeMarkup('curveSegments')}${passageRangeMarkup('endExtension')}${passageRangeMarkup('portalFrameWidth')}${passageRangeMarkup('portalFrameDepth')}${passageRangeMarkup('waterClearance')}</details>
               <p class="section-note">For U tanks, place separate passages at the center of each arm. L routes use one offset per wall, so their bend moves naturally as either entrance is repositioned.</p>
@@ -589,6 +588,7 @@ export class ControlPanel {
     this.refreshPassages();
     this.refreshColors();
     const nav = this.root.querySelector<HTMLButtonElement>('#navigation-json')!; nav.classList.toggle('is-on', this.settings.exportNavigationJson); nav.setAttribute('aria-checked', String(this.settings.exportNavigationJson));
+    const waterAnimation = this.root.querySelector<HTMLButtonElement>('#water-animation')!; waterAnimation.classList.toggle('is-on', this.settings.waterAnimationEnabled); waterAnimation.setAttribute('aria-checked', String(this.settings.waterAnimationEnabled));
     const exportScale = document.querySelector<HTMLInputElement>('#export-scale-number')!; exportScale.value = String(Number(this.settings.exportScale.toFixed(4)));
     const physicalHeight = this.settings.profile === 'belowFloor' ? this.settings.heightAboveFloor + this.settings.depthBelowFloor : this.settings.profile === 'touchPool' ? this.settings.touchPoolHeight : this.settings.height;
     const rotated = this.settings.footprintRotation === 90 || this.settings.footprintRotation === 270;
@@ -747,10 +747,9 @@ export class ControlPanel {
     const passage = this.selectedPassage(); if (!passage) return;
     this.root.querySelector<HTMLInputElement>('#passage-name')!.value = passage.name;
     this.root.querySelector<HTMLElement>('#passage-kind-label')!.textContent = passage.kind === 'alcove' ? 'Viewing alcove' : 'Through tunnel';
-    this.root.querySelector<HTMLElement>('#passage-route-label')!.textContent = passage.kind === 'alcove' ? 'One entrance · closed glass end' : passage.route === 'elbow' ? 'One 90° bend' : 'Straight route';
+    this.root.querySelector<HTMLElement>('#passage-route-label')!.textContent = passage.kind === 'alcove' ? 'One entrance · closed glass end' : passage.route === 'elbow' ? 'Two straight legs · square corner' : 'Straight route';
     this.root.querySelector<HTMLElement>('#exit-side-block')!.hidden = passage.kind === 'alcove';
     this.root.querySelector<HTMLElement>('#passage-exit-offset')!.hidden = passage.kind === 'alcove' || passage.route === 'straight';
-    const bendControl = this.root.querySelector<HTMLElement>('#passage-bend-radius'); if (bendControl) bendControl.hidden = passage.route !== 'elbow';
     this.root.querySelector<HTMLElement>('#passage-alcove-depth')!.hidden = passage.kind !== 'alcove';
     this.root.querySelector<HTMLElement>('#passage-bridge-options')!.hidden = this.settings.profile !== 'belowFloor';
     this.root.querySelectorAll<HTMLButtonElement>('[data-entry-side]').forEach((button) => button.classList.toggle('is-active', button.dataset.entrySide === passage.entrySide));

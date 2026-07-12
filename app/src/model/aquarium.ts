@@ -94,15 +94,17 @@ export function createFootprintLoop(
   const corners: Array<{
     key: keyof CornerRadii;
     centerX: number;
-    centerPythonY: number;
+    centerZ: number;
     radius: number;
     start: number;
     end: number;
   }> = [
-    { key: 'frontRight', centerX: halfWidth - radii.frontRight, centerPythonY: -halfDepth + radii.frontRight, radius: radii.frontRight, start: -90, end: 0 },
-    { key: 'backRight', centerX: halfWidth - radii.backRight, centerPythonY: halfDepth - radii.backRight, radius: radii.backRight, start: 0, end: 90 },
-    { key: 'backLeft', centerX: -halfWidth + radii.backLeft, centerPythonY: halfDepth - radii.backLeft, radius: radii.backLeft, start: 90, end: 180 },
-    { key: 'frontLeft', centerX: -halfWidth + radii.frontLeft, centerPythonY: -halfDepth + radii.frontLeft, radius: radii.frontLeft, start: 180, end: 270 },
+    // +Z is front everywhere in the editor. Keep the key-to-corner mapping in
+    // this world coordinate system so Front Left can never be mirrored to Back Left.
+    { key: 'frontRight', centerX: halfWidth - radii.frontRight, centerZ: halfDepth - radii.frontRight, radius: radii.frontRight, start: 90, end: 0 },
+    { key: 'backRight', centerX: halfWidth - radii.backRight, centerZ: -halfDepth + radii.backRight, radius: radii.backRight, start: 0, end: -90 },
+    { key: 'backLeft', centerX: -halfWidth + radii.backLeft, centerZ: -halfDepth + radii.backLeft, radius: radii.backLeft, start: -90, end: -180 },
+    { key: 'frontLeft', centerX: -halfWidth + radii.frontLeft, centerZ: halfDepth - radii.frontLeft, radius: radii.frontLeft, start: -180, end: -270 },
   ];
 
   const points: THREE.Vector2[] = [];
@@ -112,11 +114,11 @@ export function createFootprintLoop(
     const endAngle = THREE.MathUtils.degToRad(corner.end);
     const startPoint = new THREE.Vector2(
       corner.centerX + corner.radius * Math.cos(startAngle),
-      -(corner.centerPythonY + corner.radius * Math.sin(startAngle)),
+      corner.centerZ + corner.radius * Math.sin(startAngle),
     );
     const endPoint = new THREE.Vector2(
       corner.centerX + corner.radius * Math.cos(endAngle),
-      -(corner.centerPythonY + corner.radius * Math.sin(endAngle)),
+      corner.centerZ + corner.radius * Math.sin(endAngle),
     );
 
     if (mode === 'square') {
@@ -138,8 +140,7 @@ export function createFootprintLoop(
     for (let step = 0; step <= segments; step += 1) {
       const angle = THREE.MathUtils.lerp(startAngle, endAngle, step / segments);
       const x = corner.centerX + corner.radius * Math.cos(angle);
-      const pythonY = corner.centerPythonY + corner.radius * Math.sin(angle);
-      points.push(new THREE.Vector2(x, -pythonY));
+      points.push(new THREE.Vector2(x, corner.centerZ + corner.radius * Math.sin(angle)));
     }
   }
   return points;
@@ -789,12 +790,6 @@ function selectTunnelSpan(localLoop: THREE.Vector2[], halfWidth: number): Tunnel
   return selected;
 }
 
-function containingInterval(intervals: TunnelSpan[], coordinate: number): TunnelSpan {
-  return intervals.find((interval) => coordinate >= interval.exit - 1e-5 && coordinate <= interval.entrance + 1e-5)
-    ?? intervals.sort((a, b) => (b.entrance - b.exit) - (a.entrance - a.exit))[0]
-    ?? { exit: -1, entrance: 1 };
-}
-
 function makeProfileShell(
   inner: THREE.Vector2[],
   outer: THREE.Vector2[],
@@ -906,27 +901,14 @@ function makeBoxGeometry(
 }
 
 function makeEndWallWithPortal(
-  leftX: number,
-  rightX: number,
   z0: number,
   z1: number,
   yBottom: number,
   yTop: number,
-  outerHalf: number,
   roof: THREE.Vector2[],
 ): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [];
-  if (-outerHalf > leftX + EPSILON) {
-    parts.push(makeBoxGeometry(-outerHalf - leftX, yTop - yBottom, Math.abs(z1 - z0), (leftX - outerHalf) * 0.5, (yBottom + yTop) * 0.5, (z0 + z1) * 0.5));
-  }
-  if (rightX > outerHalf + EPSILON) {
-    parts.push(makeBoxGeometry(rightX - outerHalf, yTop - yBottom, Math.abs(z1 - z0), (rightX + outerHalf) * 0.5, (yBottom + yTop) * 0.5, (z0 + z1) * 0.5));
-  }
-  parts.push(makeArchOverheadPanel(roof, yTop, z0, z1));
-  const merged = mergeGeometries(parts, false);
-  for (const part of parts) if (part !== merged) part.dispose();
-  if (!merged) throw new Error('Could not build portal wall.');
-  return merged;
+  void yBottom;
+  return makeArchOverheadPanel(roof, yTop, z0, z1);
 }
 
 
@@ -961,6 +943,7 @@ interface ResolvedPassage {
   voidPolygon: MultiPolygon;
   floorPolygon: MultiPolygon;
   crown: number;
+  profileCeiling: number;
   voidBottom: number;
   bridgeFloorThickness: number;
 }
@@ -1102,15 +1085,15 @@ function validateRouteInside(segments: PassageSegment[], loop: THREE.Vector2[], 
 function resolvePassage(
   passage: PassageSettings,
   footprintLoop: THREE.Vector2[],
-  waterTop: number,
   waterBottom: number,
   belowFloor: boolean,
+  profileCeiling: number,
 ): ResolvedPassage {
   const innerHalf = passage.width * 0.5;
   const outerHalf = innerHalf + passage.glassThickness;
-  const cutHalf = outerHalf + 0.004;
+  const cutHalf = outerHalf;
   const voidHalf = outerHalf + passage.waterClearance;
-  const maximumCrown = Math.max(0.42, waterTop - passage.glassThickness - 0.16);
+  const maximumCrown = Math.max(0.42, profileCeiling - passage.glassThickness);
   const squareRoof = passage.roundness <= 0.015;
   const wallHeight = Math.min(passage.wallHeight, squareRoof ? maximumCrown : Math.max(0.15, maximumCrown - 0.12));
   const rise = squareRoof ? 0 : Math.max(0.06, Math.min(innerHalf * passage.roundness, maximumCrown - wallHeight));
@@ -1185,6 +1168,7 @@ function resolvePassage(
     voidPolygon: dry.multi,
     floorPolygon: floor.multi,
     crown,
+    profileCeiling,
     voidBottom,
     bridgeFloorThickness,
   };
@@ -1209,7 +1193,7 @@ function corridorBoundaryEdge(
   });
 }
 
-function passageProfile(passage: PassageSettings, waterTop: number): {
+function passageProfile(passage: PassageSettings, profileCeiling: number): {
   inner: ArchProfile;
   outer: ArchProfile;
   frame: ArchProfile;
@@ -1218,7 +1202,7 @@ function passageProfile(passage: PassageSettings, waterTop: number): {
   frameHalf: number;
 } {
   const innerHalf = passage.width * 0.5;
-  const maximumCrown = Math.max(0.42, waterTop - passage.glassThickness - 0.16);
+  const maximumCrown = Math.max(0.42, profileCeiling - passage.glassThickness);
   const square = passage.roundness <= 0.015;
   const wallHeight = Math.min(passage.wallHeight, square ? maximumCrown : Math.max(0.15, maximumCrown - 0.12));
   const rise = square ? 0 : Math.max(0.06, Math.min(innerHalf * passage.roundness, maximumCrown - wallHeight));
@@ -1234,20 +1218,6 @@ function passageProfile(passage: PassageSettings, waterTop: number): {
   return { inner, outer, frame, crown: wallHeight + rise + passage.glassThickness, outerHalf, frameHalf };
 }
 
-function trimSegmentForBend(segment: PassageSegment, amount: number): PassageSegment {
-  const clone: PassageSegment = {
-    ...segment,
-    a: segment.a.clone(),
-    b: segment.b.clone(),
-  };
-  const direction = clone.b.clone().sub(clone.a).normalize();
-  if (clone.touchesBendAtStart) clone.a.addScaledVector(direction, amount);
-  if (clone.touchesBendAtEnd) clone.b.addScaledVector(direction, -amount);
-  clone.startS = clone.axis === 'depth' ? clone.a.y : -clone.a.x;
-  clone.endS = clone.axis === 'depth' ? clone.b.y : -clone.b.x;
-  return clone;
-}
-
 function makeProfileEndCap(profile: THREE.Vector2[], s0: number, s1: number): THREE.BufferGeometry {
   const shape = new THREE.Shape(profile);
   const geometry = new THREE.ExtrudeGeometry(shape, { depth: Math.abs(s1 - s0), bevelEnabled: false, steps: 1 });
@@ -1257,57 +1227,84 @@ function makeProfileEndCap(profile: THREE.Vector2[], s0: number, s1: number): TH
   return geometry;
 }
 
-function makeElbowChamber(
-  bend: THREE.Vector2,
-  passage: PassageSettings,
-  crown: number,
-  entrySide: PassageSide,
-  exitSide: PassageSide,
-): THREE.BufferGeometry[] {
-  const outerHalf = passage.width * 0.5 + passage.glassThickness + Math.max(0, passage.bendRadius) * 0.28;
-  const thickness = passage.glassThickness;
-  const pieces: THREE.BufferGeometry[] = [];
-  pieces.push(makeBoxGeometry(outerHalf * 2, thickness, outerHalf * 2, bend.x, crown - thickness * 0.5, bend.y));
-  const blockedSides: PassageSide[] = (['front', 'back', 'left', 'right'] as PassageSide[])
-    .filter((side) => side !== entrySide && side !== exitSide);
-  for (const side of blockedSides) {
-    if (side === 'front' || side === 'back') {
-      pieces.push(makeBoxGeometry(outerHalf * 2, crown, thickness, bend.x, crown * 0.5, bend.y + (side === 'front' ? outerHalf - thickness * 0.5 : -outerHalf + thickness * 0.5)));
-    } else {
-      pieces.push(makeBoxGeometry(thickness, crown, outerHalf * 2, bend.x + (side === 'right' ? outerHalf - thickness * 0.5 : -outerHalf + thickness * 0.5), crown * 0.5, bend.y));
+/** The centre line is authoritative for shell, dry-space and exported route data. */
+function routeSamples(resolved: ResolvedPassage): THREE.Vector2[] {
+  const first = resolved.segments[0]!;
+  if (!resolved.bend || resolved.segments.length !== 2) return [first.a.clone(), first.b.clone()];
+  const second = resolved.segments[1]!;
+  // An L tunnel is two straight corridors meeting in one square corner. Its
+  // only curves are in the vertical portal/roof profile, never in plan view.
+  return [first.a.clone(), resolved.bend.clone(), second.b.clone()];
+}
+
+/**
+ * Offset a point on an orthogonal route. At a corner, intersect the two
+ * offset legs instead of offsetting along their averaged direction: the
+ * latter pulls a 90-degree miter inward by roughly 29%.
+ */
+function offsetRoutePoint(route: THREE.Vector2[], index: number, offset: number): THREE.Vector2 {
+  const point = route[index]!;
+  if (index === 0 || index === route.length - 1) {
+    const neighbor = route[index === 0 ? 1 : route.length - 2]!;
+    const direction = (index === 0 ? neighbor.clone().sub(point) : point.clone().sub(neighbor)).normalize();
+    return point.clone().add(new THREE.Vector2(-direction.y, direction.x).multiplyScalar(offset));
+  }
+
+  const incoming = point.clone().sub(route[index - 1]!).normalize();
+  const outgoing = route[index + 1]!.clone().sub(point).normalize();
+  const incomingNormal = new THREE.Vector2(-incoming.y, incoming.x);
+  const outgoingNormal = new THREE.Vector2(-outgoing.y, outgoing.x);
+  const miter = incomingNormal.clone().add(outgoingNormal);
+  if (miter.lengthSq() < EPSILON * EPSILON) return point.clone().add(outgoingNormal.multiplyScalar(offset));
+  miter.normalize();
+  const denominator = miter.dot(outgoingNormal);
+  if (Math.abs(denominator) < EPSILON) return point.clone().add(outgoingNormal.multiplyScalar(offset));
+  return point.clone().add(miter.multiplyScalar(offset / denominator));
+}
+
+function makeProfileSweep(inner: THREE.Vector2[], outer: THREE.Vector2[], route: THREE.Vector2[]): THREE.BufferGeometry {
+  if (inner.length !== outer.length || route.length < 2) throw new Error('Invalid passage sweep.');
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const station = (index: number, local: THREE.Vector2): THREE.Vector3 => {
+    const point = offsetRoutePoint(route, index, local.x);
+    return new THREE.Vector3(point.x, local.y, point.y);
+  };
+  for (let r = 0; r < route.length - 1; r += 1) {
+    for (let p = 0; p < inner.length - 1; p += 1) {
+      const a = outer[p]!; const b = outer[p + 1]!;
+      appendOrientedQuad(positions, indices, [station(r, a), station(r, b), station(r + 1, b), station(r + 1, a)], station(r, a).clone().sub(station(r, inner[p]!)).normalize());
+      const ia = inner[p]!; const ib = inner[p + 1]!;
+      appendOrientedQuad(positions, indices, [station(r, ia), station(r + 1, ia), station(r + 1, ib), station(r, ib)], station(r, ia).clone().sub(station(r, outer[p]!)).normalize());
+    }
+    for (const p of [0, inner.length - 1]) {
+      appendOrientedQuad(positions, indices, [station(r, outer[p]!), station(r + 1, outer[p]!), station(r + 1, inner[p]!), station(r, inner[p]!)], station(r, outer[p]!).clone().sub(station(r, inner[p]!)).normalize());
     }
   }
-  return pieces;
+  return finishGeometry(positions, indices);
 }
 
 function portalWallGeometry(
   portal: PassagePortal,
-  passage: PassageSettings,
+  resolved: ResolvedPassage,
   glassOuter: THREE.Vector2[],
   glassInner: THREE.Vector2[],
   glassBottom: number,
   glassTop: number,
-  waterTop: number,
 ): THREE.BufferGeometry {
-  const profile = passageProfile(passage, waterTop);
+  const profile = passageProfile(resolved.settings, resolved.profileCeiling);
   const outerLocal = toTunnelLocalLoop(glassOuter, portal.axis, portal.offset);
   const innerLocal = toTunnelLocalLoop(glassInner, portal.axis, portal.offset);
   const outerSpan = selectTunnelSpan(outerLocal, profile.frameHalf);
   const innerSpan = selectTunnelSpan(innerLocal, profile.outerHalf);
   const outerCoordinate = portal.outwardSign > 0 ? outerSpan.entrance : outerSpan.exit;
   const innerCoordinate = portal.outwardSign > 0 ? innerSpan.entrance : innerSpan.exit;
-  const sampleS = outerCoordinate - portal.outwardSign * 0.002;
-  const swapped = outerLocal.map((point) => new THREE.Vector2(point.y, point.x));
-  const cross = containingInterval(lineIntervalsAtLocalX(swapped, sampleS), 0);
   return orientTunnelGeometry(
     makeEndWallWithPortal(
-      cross.exit,
-      cross.entrance,
       innerCoordinate,
       outerCoordinate,
       glassBottom,
       glassTop,
-      profile.outerHalf,
       profile.outer.roof,
     ),
     portal.axis,
@@ -1317,10 +1314,10 @@ function portalWallGeometry(
 
 function portalFrameGeometry(
   portal: PassagePortal,
-  passage: PassageSettings,
-  waterTop: number,
+  resolved: ResolvedPassage,
 ): THREE.BufferGeometry {
-  const profile = passageProfile(passage, waterTop);
+  const passage = resolved.settings;
+  const profile = passageProfile(passage, resolved.profileCeiling);
   const outer = portal.coordinate + portal.outwardSign * passage.endExtension;
   const inner = outer - portal.outwardSign * passage.portalFrameDepth;
   return orientTunnelGeometry(
@@ -1330,17 +1327,10 @@ function portalFrameGeometry(
   );
 }
 
-function makePassageShellGeometries(resolved: ResolvedPassage, waterTop: number): THREE.BufferGeometry[] {
+function makePassageShellGeometries(resolved: ResolvedPassage): THREE.BufferGeometry[] {
   const passage = resolved.settings;
-  const profile = passageProfile(passage, waterTop);
-  const pieces: THREE.BufferGeometry[] = [];
-  const trim = resolved.bend ? Math.max(profile.outerHalf * 0.72, passage.bendRadius) : 0;
-  for (const original of resolved.segments) {
-    const segment = trim > 0 ? trimSegmentForBend(original, trim) : original;
-    const geometry = makeProfileShell(profile.inner.full, profile.outer.full, segment.startS, segment.endS, false, false);
-    pieces.push(orientTunnelGeometry(geometry, segment.axis, segment.offset));
-  }
-  if (resolved.bend) pieces.push(...makeElbowChamber(resolved.bend, passage, profile.crown, passage.entrySide, passage.exitSide));
+  const profile = passageProfile(passage, resolved.profileCeiling);
+  const pieces: THREE.BufferGeometry[] = [makeProfileSweep(profile.inner.full, profile.outer.full, routeSamples(resolved))];
   if (passage.kind === 'alcove') {
     const final = resolved.segments[resolved.segments.length - 1]!;
     const endpoint = final.b;
@@ -1351,14 +1341,73 @@ function makePassageShellGeometries(resolved: ResolvedPassage, waterTop: number)
   return pieces;
 }
 
+function makeMiteredBridgeRims(resolved: ResolvedPassage): THREE.BufferGeometry[] {
+  if (!resolved.bend || resolved.segments.length !== 2) return [];
+  // The below-floor water/floor footprint is intentionally rectangular at an
+  // L bend. Use that same hard 90-degree centerline for its side rims instead
+  // of the rounded acrylic-shell route.
+  const route = [resolved.segments[0]!.a.clone(), resolved.bend.clone(), resolved.segments[1]!.b.clone()];
+  const half = resolved.settings.width * 0.5;
+  const rimWidth = resolved.settings.sideRimWidth;
+  const rimHeight = resolved.settings.bridgeRimHeight;
+  const makeRim = (side: -1 | 1): THREE.BufferGeometry => {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const point = (index: number, edge: -1 | 1, y: number): THREE.Vector3 => {
+      const lateral = side * (half + rimWidth * 0.5) + edge * rimWidth * 0.5;
+      const center = offsetRoutePoint(route, index, lateral);
+      return new THREE.Vector3(center.x, y, center.y);
+    };
+    for (let index = 0; index < route.length - 1; index += 1) {
+      const inner = point(index, -1, 0); const outer = point(index, 1, 0);
+      const nextInner = point(index + 1, -1, 0); const nextOuter = point(index + 1, 1, 0);
+      const innerTop = point(index, -1, rimHeight); const outerTop = point(index, 1, rimHeight);
+      const nextInnerTop = point(index + 1, -1, rimHeight); const nextOuterTop = point(index + 1, 1, rimHeight);
+      appendOrientedQuad(positions, indices, [innerTop, nextInnerTop, nextOuterTop, outerTop], new THREE.Vector3(0, 1, 0));
+      appendOrientedQuad(positions, indices, [inner, outer, nextOuter, nextInner], new THREE.Vector3(0, -1, 0));
+      appendOrientedQuad(positions, indices, [inner, nextInner, nextInnerTop, innerTop], inner.clone().sub(outer).normalize());
+      appendOrientedQuad(positions, indices, [outer, outerTop, nextOuterTop, nextOuter], outer.clone().sub(inner).normalize());
+    }
+    const firstInner = point(0, -1, 0); const firstOuter = point(0, 1, 0);
+    const last = route.length - 1;
+    const lastInner = point(last, -1, 0); const lastOuter = point(last, 1, 0);
+    const firstDirection = route[0]!.clone().sub(route[1]!).normalize();
+    const lastDirection = route[last]!.clone().sub(route[last - 1]!).normalize();
+    appendOrientedQuad(positions, indices, [firstInner, firstOuter, point(0, 1, rimHeight), point(0, -1, rimHeight)], new THREE.Vector3(firstDirection.x, 0, firstDirection.y));
+    appendOrientedQuad(positions, indices, [lastInner, point(last, -1, rimHeight), point(last, 1, rimHeight), lastOuter], new THREE.Vector3(lastDirection.x, 0, lastDirection.y));
+    return finishGeometry(positions, indices);
+  };
+  return [makeRim(-1), makeRim(1)];
+}
+
+function makeElbowFloorBrace(resolved: ResolvedPassage): THREE.BufferGeometry | null {
+  if (!resolved.bend || resolved.segments.length !== 2) return null;
+  const towardEntry = resolved.segments[0]!.a.clone().sub(resolved.bend).normalize();
+  const towardExit = resolved.segments[1]!.b.clone().sub(resolved.bend).normalize();
+  const diagonal = towardEntry.add(towardExit).normalize();
+  // Span the complete elbow platform corner-to-corner. The route overlap is
+  // square, so a 45-degree brace needs half its diagonal (including the
+  // platform's side rims) to meet both corners.
+  const halfLength = (resolved.settings.width + resolved.settings.sideRimWidth * 2) / Math.SQRT2;
+  const center = resolved.bend;
+  const height = Math.max(0.008, resolved.settings.bridgeRimHeight * 0.16);
+  const geometry = new THREE.BoxGeometry(
+    resolved.settings.separatorWidth,
+    height,
+    halfLength * 2,
+  );
+  geometry.rotateY(Math.atan2(diagonal.x, diagonal.y));
+  geometry.translate(center.x, height * 0.5, center.y);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function makeBridgeGeometries(resolved: ResolvedPassage): {
-  floor: THREE.BufferGeometry;
   rims: THREE.BufferGeometry[];
   separators: THREE.BufferGeometry[];
 } {
   const passage = resolved.settings;
-  const floor = makePolygonPrism(resolved.floorPolygon, -resolved.bridgeFloorThickness, 0);
-  const rims: THREE.BufferGeometry[] = [];
+  const rims: THREE.BufferGeometry[] = resolved.bend ? makeMiteredBridgeRims(resolved) : [];
   const separators: THREE.BufferGeometry[] = [];
   const half = passage.width * 0.5;
   for (const segment of resolved.segments) {
@@ -1366,8 +1415,10 @@ function makeBridgeGeometries(resolved: ResolvedPassage): {
     const centerS = (segment.startS + segment.endS) * 0.5;
     const rimWidth = passage.sideRimWidth;
     const rimHeight = passage.bridgeRimHeight;
-    rims.push(orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, length, -half - rimWidth * 0.5, rimHeight * 0.5, centerS), segment.axis, segment.offset));
-    rims.push(orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, length, half + rimWidth * 0.5, rimHeight * 0.5, centerS), segment.axis, segment.offset));
+    if (!resolved.bend) {
+      rims.push(orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, length, -half - rimWidth * 0.5, rimHeight * 0.5, centerS), segment.axis, segment.offset));
+      rims.push(orientTunnelGeometry(makeBoxGeometry(rimWidth, rimHeight, length, half + rimWidth * 0.5, rimHeight * 0.5, centerS), segment.axis, segment.offset));
+    }
     const count = Math.max(0, Math.floor((length - passage.separatorSpacing * 0.35) / passage.separatorSpacing));
     const low = Math.min(segment.startS, segment.endS);
     for (let index = 1; index <= count; index += 1) {
@@ -1379,7 +1430,9 @@ function makeBridgeGeometries(resolved: ResolvedPassage): {
       ));
     }
   }
-  return { floor, rims, separators };
+  const elbowBrace = makeElbowFloorBrace(resolved);
+  if (elbowBrace) separators.push(elbowBrace);
+  return { rims, separators };
 }
 
 function makeLayeredWaterVolume(
@@ -1392,6 +1445,9 @@ function makeLayeredWaterVolume(
   for (const passage of passages) {
     levels.push(Math.max(waterBottom, passage.voidBottom));
     levels.push(Math.min(waterTop, passage.crown + passage.settings.waterClearance));
+    for (const point of passageProfile(passage.settings, passage.profileCeiling).outer.full) {
+      levels.push(THREE.MathUtils.clamp(point.y, waterBottom, waterTop));
+    }
   }
   const sorted = [...new Set(levels.map((value) => Number(value.toFixed(6))))].sort((a, b) => a - b);
   const slabs: THREE.BufferGeometry[] = [];
@@ -1400,9 +1456,9 @@ function makeLayeredWaterVolume(
     const top = sorted[index + 1]!;
     if (top - bottom < 1e-5) continue;
     const middle = (bottom + top) * 0.5;
-    const active = passages.filter((passage) => middle > passage.voidBottom + 1e-5 && middle < passage.crown + passage.settings.waterClearance - 1e-5);
-    const region = active.length > 0
-      ? difference(waterRegion, ...active.map((passage) => passage.voidPolygon))
+    const dry = passages.map((passage) => dryPolygonAtHeight(passage, middle)).filter((polygon) => polygon.length > 0);
+    const region = dry.length > 0
+      ? difference(waterRegion, ...dry)
       : waterRegion;
     if (region.length === 0) continue;
     slabs.push(makePolygonPrism(region, bottom, top, false, { includeBottom: false, includeTop: false }));
@@ -1412,6 +1468,43 @@ function makeLayeredWaterVolume(
   for (const slab of slabs) if (slab !== merged) slab.dispose();
   if (!merged) throw new Error('Could not build the layered water volume.');
   return merged;
+}
+
+function profileHalfAtHeight(passage: ResolvedPassage, y: number): number {
+  if (y < passage.voidBottom - EPSILON || y > passage.crown + passage.settings.waterClearance + EPSILON) return 0;
+  const profile = passageProfile(passage.settings, passage.profileCeiling).outer.full;
+  if (y <= 0) return profile[0]!.x * -1 + passage.settings.waterClearance;
+  const crossings: number[] = [];
+  for (let index = 0; index < profile.length - 1; index += 1) {
+    const a = profile[index]!; const b = profile[index + 1]!;
+    if ((a.y <= y && b.y >= y) || (b.y <= y && a.y >= y)) {
+      const span = b.y - a.y;
+      crossings.push(Math.abs(span < EPSILON ? a.x : THREE.MathUtils.lerp(a.x, b.x, (y - a.y) / span)));
+    }
+  }
+  return crossings.length ? Math.max(...crossings) + passage.settings.waterClearance : 0;
+}
+
+/** Exact dry cross-section projected at a height. Used by water, nav and fish. */
+function dryPolygonAtHeight(passage: ResolvedPassage, y: number): MultiPolygon {
+  const halfWidth = profileHalfAtHeight(passage, y);
+  // The orthogonal route union is deliberately conservative at an elbow. It
+  // avoids numerical failures from unions of nearly tangent arc capsules and
+  // never marks a dry corner as swimmable; the visible acrylic still follows
+  // the radius-controlled sampled centreline above.
+  return halfWidth > EPSILON ? routePolygon(passage.segments, passage.bend, halfWidth).multi : [];
+}
+
+/**
+ * Navigation deliberately uses the widest tunnel cross-section only between
+ * its void floor and crown. This avoids arch-shaped layer fragmentation while
+ * retaining free navigation above a tunnel and beneath a glass-floor bridge.
+ */
+function navigationDryPolygon(passage: ResolvedPassage): MultiPolygon {
+  const widestHalfWidth = passage.settings.width * 0.5
+    + passage.settings.glassThickness
+    + passage.settings.waterClearance;
+  return routePolygon(passage.segments, passage.bend, widestHalfWidth).multi;
 }
 
 function polygonArea(loop: THREE.Vector2[]): number {
@@ -1467,9 +1560,28 @@ function buildNavigationMetadata(
   const box = new THREE.Box2().setFromPoints(waterLoop);
   const area = polygonArea(waterLoop);
   const depth = Math.max(0, waterTop - waterBottom);
-  const passageVoidVolume = passages.reduce((sum, passage) => {
-    const routeArea = passage.voidPolygon.reduce((polygonSum, polygon) => polygonSum + Math.abs(ringArea(cleanRing(polygon[0]!))), 0);
-    return sum + routeArea * Math.max(0, Math.min(waterTop, passage.crown) - Math.max(waterBottom, passage.voidBottom));
+  const navigationLevels = [
+    waterBottom,
+    waterTop,
+    ...passages.map((passage) => THREE.MathUtils.clamp(passage.voidBottom, waterBottom, waterTop)),
+    ...passages.map((passage) => THREE.MathUtils.clamp(passage.crown, waterBottom, waterTop)),
+  ];
+  const sortedNavigationLevels = [...new Set(navigationLevels.map((value) => Number(value.toFixed(6))))].sort((a, b) => a - b);
+  const swimVolumeLayers = sortedNavigationLevels.slice(0, -1).flatMap((bottom, index) => {
+    const top = sortedNavigationLevels[index + 1]!;
+    if (top - bottom < EPSILON) return [];
+    const dry = passages
+      .filter((passage) => top > passage.voidBottom + EPSILON && bottom < passage.crown - EPSILON)
+      .map(navigationDryPolygon)
+      .filter((polygon) => polygon.length > 0);
+    const polygons = dry.length
+      ? difference([loopPolygon(waterLoop)] as MultiPolygon, ...dry)
+      : [loopPolygon(waterLoop)] as MultiPolygon;
+    return polygons.length > 0 ? [{ yBottom: bottom, yTop: top, polygons }] : [];
+  });
+  const passageVoidVolume = swimVolumeLayers.reduce((sum, layer) => {
+    const layerArea = layer.polygons.reduce((areaSum, polygon) => areaSum + Math.abs(ringArea(cleanRing(polygon[0]!))), 0);
+    return sum + Math.max(0, area - layerArea) * (layer.yTop - layer.yBottom);
   }, 0);
   const regions = navigationRegions(settings, waterBottom, waterTop);
   const portals: Array<Record<string, unknown>> = [];
@@ -1503,7 +1615,7 @@ function buildNavigationMetadata(
   }
   const data: Record<string, unknown> = {
     schema: 'aquarium-maker-navigation',
-    schemaVersion: 2,
+    schemaVersion: 3,
     coordinateSystem: { units: 'meters', up: '+Y', front: '+Z', floorLevelY: 0 },
     profile: settings.profile,
     footprint: settings.footprint,
@@ -1515,7 +1627,7 @@ function buildNavigationMetadata(
     waterSurfaceAreaM2: area,
     approximateWaterVolumeM3: Math.max(0, area * depth - passageVoidVolume),
     recommendedMaxFishRadiusM: Math.max(0.05, Math.min(settings.glassThickness + settings.waterWallGap, Math.min(settings.width, settings.depth) * 0.08)),
-    collisionGuidance: 'Keep fish centers inside at least one region polygon, inside the water height range, and outside every dryPassage clearance volume.',
+    collisionGuidance: 'Use swimVolumeLayers as the authoritative navigation volume. Between each tunnel void floor and crown, arches are simplified to their widest footprint; water above a crown and below a glass-floor bridge remains navigable.',
     suggestedSpawnPoints: regions.map((region, index) => {
       const polygon = region.polygon as number[][];
       const sx = polygon.reduce((sum, point) => sum + point[0]!, 0) / Math.max(1, polygon.length);
@@ -1524,18 +1636,29 @@ function buildNavigationMetadata(
     }),
     regions,
     portals,
-    dryPassages: passages.map((passage) => ({
-      id: passage.settings.id,
-      name: passage.settings.name,
-      kind: passage.settings.kind,
-      route: passage.settings.route,
-      width: passage.settings.width,
-      floorY: 0,
-      crownY: passage.crown,
-      centerline: passage.segments.flatMap((segment, index) => index === 0
-        ? [[segment.a.x, 0, segment.a.y], [segment.b.x, 0, segment.b.y]]
-        : [[segment.b.x, 0, segment.b.y]]),
-    })),
+    swimVolumeLayers: swimVolumeLayers.map((layer, index) => ({ id: `swim-layer-${index + 1}`, ...layer })),
+    dryPassages: passages.map((passage) => {
+      const navigationFloor = THREE.MathUtils.clamp(passage.voidBottom, waterBottom, waterTop);
+      const navigationCrown = THREE.MathUtils.clamp(passage.crown, waterBottom, waterTop);
+      const widestHalfWidth = passage.settings.width * 0.5 + passage.settings.glassThickness + passage.settings.waterClearance;
+      return {
+        id: passage.settings.id,
+        name: passage.settings.name,
+        kind: passage.settings.kind,
+        route: passage.settings.route,
+        width: passage.settings.width,
+        floorY: navigationFloor,
+        crownY: navigationCrown,
+        waterClearance: 0,
+        bendRadius: 0,
+        crossSection: [
+          [-widestHalfWidth, navigationFloor], [-widestHalfWidth, navigationCrown],
+          [widestHalfWidth, navigationCrown], [widestHalfWidth, navigationFloor],
+        ],
+        centerline: routeSamples(passage).map((point) => [point.x, 0, point.y]),
+        dryVolume: 'widest tunnel footprint between its void floor and crown; water above and below it remains navigable',
+      };
+    }),
   };
   const navRoot = new THREE.Group();
   navRoot.name = 'NAV_Aquarium';
@@ -1633,12 +1756,16 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const topRimBottom = profileTop - topRimHeight;
   const glassBottom = settings.profile === 'belowFloor' ? 0 : baseTop + settings.bottomRimHeight * 0.34;
   const glassTop = profileTop - topRimHeight * 0.34;
+  // Tunnel roofs are limited by the tank structure, never by the water line.
+  const passageCeiling = Math.max(0.42, glassTop - 0.04);
   const sandBottom = baseTop + settings.bottomRimHeight * 0.58;
   const sandTop = sandBottom + settings.sandHeight;
   const interiorWaterCeiling = topRimBottom - 0.055;
   const waterTop = sandTop + (interiorWaterCeiling - sandTop) * settings.waterLevel;
   const waterBottom = sandTop - Math.min(0.032, settings.sandHeight * 0.45);
   const waterDepth = Math.max(0.001, waterTop - waterBottom);
+  const navClearance = Math.min(settings.navOverlayClearance, Math.min(settings.width, settings.depth) * 0.18);
+  const terrainMaximum = sandTop + settings.groundMoundHeight + settings.groundIrregularity;
 
   const baseMaterial = new THREE.MeshStandardMaterial({
     name: 'Plinth_Painted', color: new THREE.Color(0.19, 0.215, 0.235), metalness: 0, roughness: 0.82,
@@ -1805,9 +1932,12 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     surface.userData.waterAnimation = { enabled: settings.waterAnimationEnabled, speed: settings.waterAnimationSpeed, amount: settings.waterAnimationAmount, preset: settings.waterSurfacePreset };
   };
 
-  let navigationWaterLoop = waterLoop;
-  let navigationWaterBottom = waterBottom;
-  let navigationWaterTop = waterTop;
+  let navigationWaterLoop = createFootprintShapeLoop(settings, -(waterInset + navClearance));
+  let navigationWaterTop = waterTop - navClearance;
+  let navigationWaterBottom = Math.min(
+    navigationWaterTop - 0.02,
+    Math.max(waterBottom + navClearance, terrainMaximum + navClearance),
+  );
   let resolvedPassages: ResolvedPassage[] = [];
 
   if (settings.profile === 'touchPool') {
@@ -1829,9 +1959,12 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     addMesh('STRUCTURE_TouchRim', makePolygonPrism(rimRegion, rimBottom, profileTop), frameMaterial);
     addGround(asMulti(basinLoop), touchGroundBottom, touchGroundTop);
     addWater(asMulti(basinLoop), touchGroundTop - 0.012, touchWaterTop);
-    navigationWaterLoop = basinLoop;
-    navigationWaterBottom = touchGroundTop - 0.012;
-    navigationWaterTop = touchWaterTop;
+    navigationWaterLoop = createFootprintShapeLoop(settings, -(settings.touchRimWidth + settings.touchBasinInset + navClearance));
+    navigationWaterTop = touchWaterTop - navClearance;
+    navigationWaterBottom = Math.min(
+      navigationWaterTop - 0.02,
+      touchGroundTop + settings.groundMoundHeight + settings.groundIrregularity + navClearance,
+    );
   } else if (configuredPassages.length === 0) {
     addMesh('STRUCTURE_BasePlinth', makePolygonPrism(baseRegion, profileBottom, baseTop), baseMaterial);
     addMesh('STRUCTURE_BottomRim', makePolygonPrism(frameRegion, baseTop, bottomRimTop), frameMaterial);
@@ -1849,9 +1982,9 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     resolvedPassages = configuredPassages.map((passage) => resolvePassage(
       passage,
       glassOuter,
-      waterTop,
       waterBottom,
       settings.profile === 'belowFloor',
+      passageCeiling,
     ));
     const allCuts = resolvedPassages.map((passage) => passage.cutPolygon);
     const openFloorCuts = resolvedPassages
@@ -1881,7 +2014,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     ];
     for (const passage of resolvedPassages) {
       for (const portal of passage.portals) {
-        glassParts.push(portalWallGeometry(portal, passage.settings, glassOuter, glassInner, glassBottom, glassTop, waterTop));
+        glassParts.push(portalWallGeometry(portal, passage, glassOuter, glassInner, glassBottom, glassTop));
       }
     }
     const glass = addMesh('GLASS_AcrylicShell', mergeParts(glassParts, 'continuous aquarium glass'), glassMaterial, false, false);
@@ -1890,11 +2023,26 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
     addGround(groundCut, sandBottom, sandTop);
 
+    const bridgePassages = settings.profile === 'belowFloor'
+      ? resolvedPassages.filter((passage) => passage.settings.glassFloor)
+      : [];
+    // Straight and L bridge floors share the same construction: union their
+    // authoritative planar route footprints, then extrude the union once.
+    // This preserves the proven straight-bridge behavior, creates a clean
+    // mitered L corner, and prevents overlapping floor slabs at crossings.
+    if (bridgePassages.length > 0) {
+      const floorRegion = unionClipPolygons(bridgePassages.map((passage) => passage.floorPolygon));
+      const floorThickness = Math.max(...bridgePassages.map((passage) => passage.bridgeFloorThickness));
+      const floor = addMesh('PASSAGE_BRIDGE_CombinedGlassFloor', makePolygonPrism(floorRegion, -floorThickness, 0), glassMaterial, false, false);
+      floor.renderOrder = 6;
+      floor.userData = { passageIds: bridgePassages.map((passage) => passage.settings.id), merged: true };
+    }
+
     resolvedPassages.forEach((passage, passageIndex) => {
       const safeId = passage.settings.id.replace(/[^a-z0-9]+/gi, '_');
       const shell = addMesh(
         `PASSAGE_${safeId}_AcrylicShell`,
-        mergeParts(makePassageShellGeometries(passage, waterTop), `${passage.settings.name} acrylic shell`),
+        mergeParts(makePassageShellGeometries(passage), `${passage.settings.name} acrylic shell`),
         glassMaterial,
         false,
         false,
@@ -1909,7 +2057,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
       passage.portals.forEach((portal, portalIndex) => {
         const frame = addMesh(
           `PASSAGE_${safeId}_${String(portalIndex + 1).padStart(2, '0')}_${portal.label === 'entrance' ? 'Entrance' : 'Exit'}Frame`,
-          portalFrameGeometry(portal, passage.settings, waterTop),
+          portalFrameGeometry(portal, passage),
           frameMaterial,
         );
         frame.userData = { passageId: passage.settings.id, portalSide: portal.side, portalLabel: portal.label };
@@ -1917,8 +2065,6 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 
       if (settings.profile === 'belowFloor' && passage.settings.glassFloor) {
         const bridge = makeBridgeGeometries(passage);
-        const floor = addMesh(`PASSAGE_${safeId}_GlassFloor`, bridge.floor, glassMaterial, false, false);
-        floor.renderOrder = 6;
         bridge.rims.forEach((geometry, index) => addMesh(`PASSAGE_${safeId}_SideRim_${String(index + 1).padStart(2, '0')}`, geometry, frameMaterial));
         bridge.separators.forEach((geometry, index) => addMesh(`PASSAGE_${safeId}_FloorSeparator_${String(index + 1).padStart(2, '0')}`, geometry, frameMaterial));
       }
@@ -1935,7 +2081,14 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
       false,
     );
     volume.renderOrder = 1;
-    const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(waterRegion, waterTop), waterSurfaceMaterial, false, false);
+    // The water surface must use the same dry passage subtraction as the
+    // layered water volume. Otherwise a flat surface polygon visibly spans a
+    // tunnel even though the volume below it has already been cut away.
+    const surfaceDry = resolvedPassages
+      .map((passage) => dryPolygonAtHeight(passage, waterTop))
+      .filter((polygon) => polygon.length > 0);
+    const waterSurfaceRegion = surfaceDry.length > 0 ? difference(waterRegion, ...surfaceDry) : waterRegion;
+    const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(waterSurfaceRegion, waterTop), waterSurfaceMaterial, false, false);
     surface.renderOrder = 3;
     surface.userData.waterAnimation = { enabled: settings.waterAnimationEnabled, speed: settings.waterAnimationSpeed, amount: settings.waterAnimationAmount, preset: settings.waterSurfacePreset };
   }

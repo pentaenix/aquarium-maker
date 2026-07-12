@@ -66,11 +66,20 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
       if (!Number.isFinite(cross.lengthSq()) || cross.lengthSq() < 1e-16) degenerate += 1;
     }
   });
-  const navigation = build.group.userData.navigation as { schema?: string; regions?: unknown[]; portals?: unknown[] } | undefined;
-  const navigationValid = navigation?.schema === 'aquarium-maker-navigation' && Array.isArray(navigation.regions) && Array.isArray(navigation.portals);
+  const navigation = build.group.userData.navigation as { schema?: string; schemaVersion?: number; regions?: unknown[]; portals?: unknown[]; swimVolumeLayers?: Array<{ yBottom?: number; yTop?: number; polygons?: unknown[] }>; dryPassages?: Array<{ crossSection?: unknown[]; centerline?: unknown[]; bendRadius?: number }> } | undefined;
+  const navigationValid = navigation?.schema === 'aquarium-maker-navigation'
+    && navigation.schemaVersion === 3
+    && Array.isArray(navigation.regions)
+    && Array.isArray(navigation.portals)
+    && Array.isArray(navigation.swimVolumeLayers)
+    && navigation.swimVolumeLayers.length >= 1
+    && navigation.swimVolumeLayers.every((layer) => Number.isFinite(layer.yBottom) && Number.isFinite(layer.yTop) && Array.isArray(layer.polygons))
+    && Array.isArray(navigation.dryPassages)
+    && navigation.dryPassages.every((passage) => Array.isArray(passage.crossSection) && Array.isArray(passage.centerline));
   const acrylicMaterialConsistent = acrylicMaterials.size <= 1;
+  const hardElbowValid = !label.includes('elbow') || navigation?.dryPassages?.every((passage) => passage.bendRadius === 0 && passage.centerline?.length === 3);
   console.log(JSON.stringify({ label, meshes, triangles: build.triangles, vertices: build.vertices, invalid, degenerate, navigationValid, acrylicMaterialConsistent, regions: navigation?.regions?.length ?? 0, portals: navigation?.portals?.length ?? 0, size: box.getSize(new THREE.Vector3()).toArray(), names }, null, 2));
-  if (invalid || degenerate || !navigationValid || !acrylicMaterialConsistent) process.exitCode = 1;
+  if (invalid || degenerate || !navigationValid || !acrylicMaterialConsistent || !hardElbowValid) process.exitCode = 1;
   build.dispose();
 }
 
@@ -85,6 +94,17 @@ tunnel.tunnelWidth = 2.65;
 tunnel.tunnelWallHeight = 1.18;
 tunnel.tunnelRoundness = 0.88;
 validate('tunnel', tunnel);
+
+const lowWaterTallTunnel = cloneSettings(DEFAULT_SETTINGS);
+lowWaterTallTunnel.width = 12;
+lowWaterTallTunnel.depth = 8;
+lowWaterTallTunnel.height = 5.4;
+lowWaterTallTunnel.waterLevel = 0.24;
+lowWaterTallTunnel.tunnelEnabled = true;
+lowWaterTallTunnel.tunnelWidth = 2.2;
+lowWaterTallTunnel.tunnelWallHeight = 3.25;
+lowWaterTallTunnel.tunnelRoundness = 0.8;
+validate('low-water-tall-tunnel', lowWaterTallTunnel);
 const mixed = cloneSettings(DEFAULT_SETTINGS);
 mixed.cornerModes = { frontLeft: 'chamfer', frontRight: 'rounded', backRight: 'square', backLeft: 'chamfer' };
 mixed.tunnelEnabled = true;
@@ -239,6 +259,13 @@ lElbowPassage.exitOffset = -2.6;
 lElbowPassage.width = 1.35;
 lElbow.passages = [lElbowPassage];
 validate('l-shape-elbow-tunnel', lElbow);
+
+const belowLElbow = cloneSettings(lElbow);
+belowLElbow.profile = 'belowFloor';
+belowLElbow.depthBelowFloor = 4.2;
+belowLElbow.heightAboveFloor = 1.3;
+belowLElbow.passages = belowLElbow.passages.map((passage) => ({ ...passage, glassFloor: true }));
+validate('l-shape-below-floor-elbow-bridge', belowLElbow);
 
 const uMulti = cloneSettings(DEFAULT_SETTINGS);
 uMulti.footprint = 'uShape';
