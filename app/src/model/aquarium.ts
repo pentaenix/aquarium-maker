@@ -633,29 +633,36 @@ function makeTerrainSurface(multi: MultiPolygon, y: number, settings: AquariumSe
     });
   }
 
-  const rawHeights: number[] = [];
-  let maximum = 0;
+  const moundHeights: number[] = [];
+  const noiseHeights: number[] = [];
+  let maximumMound = 0;
   for (let index = 0; index < position.count; index += 1) {
     const x = position.getX(index);
     const z = position.getZ(index);
-    let height = 0;
-    for (const mound of mounds) {
-      const distanceSquared = (x - mound.x) ** 2 + (z - mound.z) ** 2;
-      height += Math.exp(-distanceSquared / Math.max(2 * mound.sigma * mound.sigma, EPSILON)) * mound.weight;
+    let mound = 0;
+    for (const source of mounds) {
+      const distanceSquared = (x - source.x) ** 2 + (z - source.z) ** 2;
+      mound += Math.exp(-distanceSquared / Math.max(2 * source.sigma * source.sigma, EPSILON)) * source.weight;
     }
-    height += 0.08 * (Math.sin(x * 1.37 + z * 0.41 + settings.sandSeed) + 1) * 0.5;
-    rawHeights.push(height);
-    maximum = Math.max(maximum, height);
+    const noise = (
+      Math.sin(x * 1.37 + z * 0.41 + settings.sandSeed * 0.013)
+      + Math.sin(x * 0.53 - z * 1.11 + settings.sandSeed * 0.021)
+      + Math.sin(x * 2.17 + z * 1.73 + settings.sandSeed * 0.007)
+    ) / 6 + 0.5;
+    moundHeights.push(mound);
+    noiseHeights.push(noise);
+    maximumMound = Math.max(maximumMound, mound);
   }
 
-  const edgeFadeDistance = Math.max(0.18, settings.groundMoundSize * 0.35);
+  const edgeFadeDistance = Math.max(0.02, settings.groundWallFalloff);
   for (let index = 0; index < position.count; index += 1) {
     const x = position.getX(index);
     const z = position.getZ(index);
     const edgeDistance = distanceToMultiBoundary(x, z, multi);
-    const fade = THREE.MathUtils.smoothstep(edgeDistance, 0, edgeFadeDistance);
-    const normalized = maximum > EPSILON ? rawHeights[index]! / maximum : 0;
-    position.setY(index, y + settings.groundIrregularity * normalized * fade);
+    const fade = edgeFadeDistance <= EPSILON ? 1 : THREE.MathUtils.smoothstep(edgeDistance, 0, edgeFadeDistance);
+    const normalizedMound = maximumMound > EPSILON ? moundHeights[index]! / maximumMound : 0;
+    const elevation = settings.groundMoundHeight * normalizedMound + settings.groundIrregularity * noiseHeights[index]!;
+    position.setY(index, y + elevation * fade);
   }
   position.needsUpdate = true;
   geometry.computeVertexNormals();
@@ -1101,7 +1108,7 @@ function resolvePassage(
 ): ResolvedPassage {
   const innerHalf = passage.width * 0.5;
   const outerHalf = innerHalf + passage.glassThickness;
-  const cutHalf = outerHalf + passage.portalFrameWidth;
+  const cutHalf = outerHalf + 0.004;
   const voidHalf = outerHalf + passage.waterClearance;
   const maximumCrown = Math.max(0.42, waterTop - passage.glassThickness - 0.16);
   const squareRoof = passage.roundness <= 0.015;
@@ -1257,7 +1264,7 @@ function makeElbowChamber(
   entrySide: PassageSide,
   exitSide: PassageSide,
 ): THREE.BufferGeometry[] {
-  const outerHalf = passage.width * 0.5 + passage.glassThickness;
+  const outerHalf = passage.width * 0.5 + passage.glassThickness + Math.max(0, passage.bendRadius) * 0.28;
   const thickness = passage.glassThickness;
   const pieces: THREE.BufferGeometry[] = [];
   pieces.push(makeBoxGeometry(outerHalf * 2, thickness, outerHalf * 2, bend.x, crown - thickness * 0.5, bend.y));
@@ -1327,7 +1334,7 @@ function makePassageShellGeometries(resolved: ResolvedPassage, waterTop: number)
   const passage = resolved.settings;
   const profile = passageProfile(passage, waterTop);
   const pieces: THREE.BufferGeometry[] = [];
-  const trim = resolved.bend ? profile.outerHalf * 0.72 : 0;
+  const trim = resolved.bend ? Math.max(profile.outerHalf * 0.72, passage.bendRadius) : 0;
   for (const original of resolved.segments) {
     const segment = trim > 0 ? trimSegmentForBend(original, trim) : original;
     const geometry = makeProfileShell(profile.inner.full, profile.outer.full, segment.startS, segment.endS, false, false);
@@ -1577,7 +1584,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   const configuredPassages = activePassages(settings);
   group.name = configuredPassages.length > 0 ? 'PUBLIC_AQUARIUM_WITH_PASSAGES' : 'PROFESSIONAL_PUBLIC_AQUARIUM';
   group.userData = {
-    generator: 'Aquarium Maker 1.8',
+    generator: 'Aquarium Maker 1.9',
     geometryProfile: 'editable arm layout + multi-passage system',
     profile: settings.profile,
     footprint: settings.footprint,
@@ -1591,6 +1598,8 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     opaqueBackPanel: false,
     groundPreset: settings.groundPreset,
     groundIrregularity: settings.groundIrregularity,
+    groundMoundHeight: settings.groundMoundHeight,
+    wallModes: settings.wallModes,
     passageCount: configuredPassages.length,
     passages: configuredPassages.map((passage) => ({
       id: passage.id,
@@ -1642,6 +1651,9 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
   });
   const basinMaterial = new THREE.MeshStandardMaterial({
     name: 'TouchPool_Basin', color: new THREE.Color(0.34, 0.39, 0.41), metalness: 0.04, roughness: 0.72,
+  });
+  const solidWallMaterial = new THREE.MeshStandardMaterial({
+    name: 'Solid_Aquarium_Wall', color: new THREE.Color(settings.solidWallColor), metalness: 0.06, roughness: 0.68,
   });
 
   // One physical material is shared by the tank wall, entrance glass, tunnel
@@ -1716,6 +1728,37 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     return mesh;
   }
 
+  function addSolidWallPanels(loop: THREE.Vector2[], yBottom: number, yTop: number, portals: ResolvedPassage[] = []): void {
+    const box = new THREE.Box2().setFromPoints(loop);
+    const tolerance = Math.max(settings.glassThickness * 4, Math.min(box.max.x - box.min.x, box.max.y - box.min.y) * 0.04);
+    const pieces: THREE.BufferGeometry[] = [];
+    for (let index = 0; index < loop.length; index += 1) {
+      const a = loop[index]!;
+      const b = loop[(index + 1) % loop.length]!;
+      const midpoint = a.clone().add(b).multiplyScalar(0.5);
+      let side: PassageSide | null = null;
+      if (Math.abs(midpoint.y - box.max.y) <= tolerance) side = 'front';
+      else if (Math.abs(midpoint.y - box.min.y) <= tolerance) side = 'back';
+      else if (Math.abs(midpoint.x - box.min.x) <= tolerance) side = 'left';
+      else if (Math.abs(midpoint.x - box.max.x) <= tolerance) side = 'right';
+      if (!side || settings.wallModes[side] !== 'solid') continue;
+      const blockedByPortal = portals.some((resolved) => resolved.portals.some((portal) => {
+        if (portal.side !== side) return false;
+        const along = side === 'front' || side === 'back' ? midpoint.x : midpoint.y;
+        return Math.abs(along - portal.offset) < resolved.settings.width * 0.62 + resolved.settings.portalFrameWidth;
+      }));
+      if (blockedByPortal) continue;
+      const length = a.distanceTo(b);
+      if (length < 1e-4) continue;
+      const center = a.clone().add(b).multiplyScalar(0.5);
+      const geometry = new THREE.BoxGeometry(length + settings.glassThickness * 0.8, yTop - yBottom, settings.glassThickness * 1.45);
+      geometry.rotateY(-Math.atan2(b.y - a.y, b.x - a.x));
+      geometry.translate(center.x, (yBottom + yTop) * 0.5, center.y);
+      pieces.push(geometry);
+    }
+    if (pieces.length > 0) addMesh('STRUCTURE_SolidWallPanels', mergeParts(pieces, 'solid wall panels'), solidWallMaterial, true, true);
+  }
+
   function mergeParts(parts: THREE.BufferGeometry[], label: string): THREE.BufferGeometry {
     if (parts.length === 0) throw new Error(`No geometry was generated for ${label}.`);
     if (parts.length === 1) return parts[0]!;
@@ -1759,6 +1802,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     volume.renderOrder = 1;
     const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(region, yTop), waterSurfaceMaterial, false, false);
     surface.renderOrder = 3;
+    surface.userData.waterAnimation = { enabled: settings.waterAnimationEnabled, speed: settings.waterAnimationSpeed, amount: settings.waterAnimationAmount, preset: settings.waterSurfacePreset };
   };
 
   let navigationWaterLoop = waterLoop;
@@ -1797,6 +1841,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     }
     const glass = addMesh('GLASS_AcrylicShell', makePolygonPrism(glassRegion, glassBottom, glassTop), glassMaterial, false, false);
     glass.renderOrder = 6;
+    addSolidWallPanels(glassOuter, glassBottom, glassTop);
     addGround(groundRegion, sandBottom, sandTop);
     addWater(waterRegion, waterBottom, waterTop);
     addMesh('STRUCTURE_TopRim', makePolygonPrism(frameRegion, topRimBottom, profileTop), frameMaterial);
@@ -1841,6 +1886,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     }
     const glass = addMesh('GLASS_AcrylicShell', mergeParts(glassParts, 'continuous aquarium glass'), glassMaterial, false, false);
     glass.renderOrder = 6;
+    addSolidWallPanels(glassOuter, glassBottom, glassTop, resolvedPassages);
 
     addGround(groundCut, sandBottom, sandTop);
 
@@ -1891,6 +1937,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     volume.renderOrder = 1;
     const surface = addMesh('WATER_Surface', makeSurfaceFromMultiPolygon(waterRegion, waterTop), waterSurfaceMaterial, false, false);
     surface.renderOrder = 3;
+    surface.userData.waterAnimation = { enabled: settings.waterAnimationEnabled, speed: settings.waterAnimationSpeed, amount: settings.waterAnimationAmount, preset: settings.waterSurfacePreset };
   }
 
   const navigation = buildNavigationMetadata(

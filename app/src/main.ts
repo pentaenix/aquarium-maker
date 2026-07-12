@@ -58,6 +58,7 @@ function mergeSettings(partial: Partial<AquariumSettings>): AquariumSettings {
     cornerModes: { ...DEFAULT_SETTINGS.cornerModes, ...partial.cornerModes },
     shapeCornerRadii: { ...DEFAULT_SETTINGS.shapeCornerRadii, ...partial.shapeCornerRadii },
     shapeCornerModes: { ...DEFAULT_SETTINGS.shapeCornerModes, ...partial.shapeCornerModes },
+    wallModes: { ...DEFAULT_SETTINGS.wallModes, ...partial.wallModes },
   });
 }
 
@@ -170,6 +171,84 @@ scene.add(ground);
 
 let currentBuild: AquariumBuild | null = null;
 let modelGroup: THREE.Group | null = null;
+const navOverlayGroup = new THREE.Group();
+navOverlayGroup.name = 'VIEWPORT_NAV_OVERLAY';
+scene.add(navOverlayGroup);
+const simulationGroup = new THREE.Group();
+simulationGroup.name = 'VIEWPORT_ANIMAL_SIMULATION';
+scene.add(simulationGroup);
+type SimAgent = { position: THREE.Vector3; velocity: THREE.Vector3; phase: number };
+let simAgents: SimAgent[] = [];
+let simMesh: THREE.InstancedMesh | null = null;
+let simulationBounds: THREE.Box3 | null = null;
+let simulationBoundary: number[][] = [];
+let simulationYRange: [number, number] = [0, 1];
+const dummyObject = new THREE.Object3D();
+
+function pointInBoundary(x: number, z: number): boolean {
+  let inside = false;
+  for (let i = 0, j = simulationBoundary.length - 1; i < simulationBoundary.length; j = i++) {
+    const a = simulationBoundary[i]!; const b = simulationBoundary[j]!;
+    if (((a[1]! > z) !== (b[1]! > z)) && x < (b[0]! - a[0]!) * (z - a[1]!) / Math.max(1e-9, b[1]! - a[1]!) + a[0]!) inside = !inside;
+  }
+  return inside;
+}
+
+const SIM_TEMPLATES = {
+  school: { count: 140, size: 0.07, speed: 0.75, turn: 1.8, surface: 0.5 },
+  reef: { count: 32, size: 0.16, speed: 0.42, turn: 1.15, surface: 0.5 },
+  large: { count: 4, size: 0.48, speed: 0.28, turn: 0.38, surface: 0.55 },
+  ray: { count: 5, size: 0.42, speed: 0.24, turn: 0.42, surface: 0.22 },
+  dolphin: { count: 3, size: 0.58, speed: 0.62, turn: 0.34, surface: 0.72 },
+  otter: { count: 4, size: 0.34, speed: 0.34, turn: 0.7, surface: 0.84 },
+  bottom: { count: 18, size: 0.13, speed: 0.22, turn: 1.1, surface: 0.08 },
+} as const;
+
+function clearPreviewHelpers(): void {
+  navOverlayGroup.clear();
+  if (simMesh) { simMesh.geometry.dispose(); (simMesh.material as THREE.Material).dispose(); }
+  simulationGroup.clear(); simMesh = null; simAgents = [];
+}
+
+function rebuildNavOverlay(): void {
+  navOverlayGroup.clear();
+  const navigation = modelGroup?.userData.navigation as Record<string, unknown> | undefined;
+  if (!navigation || !settings.navOverlayEnabled) return;
+  const boundary = navigation.waterBoundary as number[][];
+  const range = navigation.waterHeightRangeMeters as number[];
+  if (!Array.isArray(boundary) || boundary.length < 3) return;
+  const shape = new THREE.Shape(boundary.map((point) => new THREE.Vector2(point[0]!, point[1]!)));
+  const geometry = new THREE.ShapeGeometry(shape);
+  geometry.rotateX(-Math.PI / 2);
+  geometry.translate(0, (range?.[0] ?? 0) + 0.02, 0);
+  const material = new THREE.MeshBasicMaterial({ color: 0x31d169, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geometry, material); mesh.renderOrder = 20; navOverlayGroup.add(mesh);
+}
+
+function rebuildSimulation(): void {
+  simulationGroup.clear(); simAgents = []; simMesh = null;
+  const navigation = modelGroup?.userData.navigation as Record<string, unknown> | undefined;
+  if (!navigation || !settings.fishSimulationEnabled) return;
+  simulationBoundary = navigation.waterBoundary as number[][];
+  const range = navigation.waterHeightRangeMeters as number[];
+  simulationYRange = [range?.[0] ?? 0, range?.[1] ?? 1];
+  const bounds = navigation.boundsMeters as { min:number[]; max:number[] };
+  simulationBounds = new THREE.Box3(new THREE.Vector3(bounds.min[0], bounds.min[1], bounds.min[2]), new THREE.Vector3(bounds.max[0], bounds.max[1], bounds.max[2]));
+  const template = SIM_TEMPLATES[settings.fishSimulationPreset];
+  const geometry = settings.fishSimulationPreset === 'ray' ? new THREE.SphereGeometry(1, 8, 5) : new THREE.ConeGeometry(0.32, 1, 6);
+  geometry.rotateZ(-Math.PI / 2); geometry.scale(template.size * 0.55, template.size * 0.35, template.size * 0.35);
+  const material = new THREE.MeshStandardMaterial({ color: settings.fishSimulationPreset === 'school' ? 0x4d83aa : 0x65747a, roughness: 0.6, metalness: 0 });
+  simMesh = new THREE.InstancedMesh(geometry, material, template.count); simulationGroup.add(simMesh);
+  const center = simulationBounds.getCenter(new THREE.Vector3());
+  for (let i=0;i<template.count;i++) {
+    let x=center.x,z=center.z, tries=0;
+    do { x=THREE.MathUtils.lerp(simulationBounds.min.x,simulationBounds.max.x,Math.random()); z=THREE.MathUtils.lerp(simulationBounds.min.z,simulationBounds.max.z,Math.random()); tries++; } while(!pointInBoundary(x,z)&&tries<80);
+    const y=THREE.MathUtils.lerp(simulationYRange[0]+template.size,simulationYRange[1]-template.size,Math.min(0.98,Math.max(0.02,template.surface+THREE.MathUtils.randFloatSpread(0.28))));
+    simAgents.push({position:new THREE.Vector3(x,y,z),velocity:new THREE.Vector3(THREE.MathUtils.randFloatSpread(1),THREE.MathUtils.randFloatSpread(.25),THREE.MathUtils.randFloatSpread(1)).normalize().multiplyScalar(template.speed),phase:Math.random()*Math.PI*2});
+  }
+}
+
+function refreshPreviewHelpers(): void { rebuildNavOverlay(); rebuildSimulation(); }
 let lastValidSettings = cloneSettings(settings);
 let panel: ControlPanel | null = null;
 let rebuildTimer = 0;
@@ -203,6 +282,7 @@ function rebuildNow(autoFrame = false): void {
     currentBuild = nextBuild;
     modelGroup = nextBuild.group;
     scene.add(nextBuild.group);
+    refreshPreviewHelpers();
     lastValidSettings = cloneSettings(settings);
     updateStats();
     saveSettings();
@@ -400,10 +480,50 @@ controls?.addEventListener('start', () => {
   document.querySelector('#viewer-hint')?.classList.add('is-hidden');
 });
 
+const navButton = requireElement<HTMLButtonElement>('#toggle-nav-overlay');
+const fishButton = requireElement<HTMLButtonElement>('#toggle-fish-simulation');
+const fishPreset = requireElement<HTMLSelectElement>('#fish-preset');
+navButton.addEventListener('click', () => { settings.navOverlayEnabled = !settings.navOverlayEnabled; navButton.classList.toggle('is-active', settings.navOverlayEnabled); rebuildNavOverlay(); saveSettings(); });
+fishButton.addEventListener('click', () => { settings.fishSimulationEnabled = !settings.fishSimulationEnabled; fishButton.classList.toggle('is-active', settings.fishSimulationEnabled); rebuildSimulation(); saveSettings(); });
+fishPreset.value = settings.fishSimulationPreset;
+fishPreset.addEventListener('change', () => { settings.fishSimulationPreset = fishPreset.value as AquariumSettings['fishSimulationPreset']; rebuildSimulation(); saveSettings(); });
+navButton.classList.toggle('is-active', settings.navOverlayEnabled); fishButton.classList.toggle('is-active', settings.fishSimulationEnabled);
+
+let previousRenderTime = performance.now();
 let animationFrame = 0;
-function render(): void {
+function render(time = performance.now()): void {
   if (!renderer) return;
+  const delta = Math.min(0.05, Math.max(0, (time - previousRenderTime) / 1000)); previousRenderTime = time;
   controls?.update();
+  if (modelGroup && settings.waterAnimationEnabled) {
+    modelGroup.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || object.name !== 'WATER_Surface') return;
+      const material = object.material as THREE.MeshPhysicalMaterial;
+      const speed = settings.waterAnimationSpeed * delta;
+      if (material.map) { material.map.wrapS = material.map.wrapT = THREE.RepeatWrapping; material.map.offset.x += speed * 0.018; material.map.offset.y += speed * 0.011; }
+      if (material.normalMap) { material.normalMap.wrapS = material.normalMap.wrapT = THREE.RepeatWrapping; material.normalMap.offset.x -= speed * 0.013; material.normalMap.offset.y += speed * 0.016; }
+      object.position.y = Math.sin(time * 0.0014 * Math.max(0.1, settings.waterAnimationSpeed)) * settings.waterAnimationAmount;
+    });
+  }
+  if (simMesh && settings.fishSimulationEnabled && simulationBounds) {
+    const activeBounds = simulationBounds;
+    const template = SIM_TEMPLATES[settings.fishSimulationPreset];
+    simAgents.forEach((agent,index) => {
+      agent.phase += delta;
+      agent.velocity.x += Math.sin(agent.phase*1.7+index)*template.turn*delta*0.08;
+      agent.velocity.z += Math.cos(agent.phase*1.3+index)*template.turn*delta*0.08;
+      const desiredY = THREE.MathUtils.lerp(simulationYRange[0], simulationYRange[1], template.surface);
+      agent.velocity.y += (desiredY-agent.position.y)*delta*0.18;
+      agent.velocity.setLength(template.speed);
+      const next=agent.position.clone().addScaledVector(agent.velocity,delta);
+      const margin=template.size*0.8;
+      if (!pointInBoundary(next.x,next.z) || next.y<simulationYRange[0]+margin || next.y>simulationYRange[1]-margin) {
+        const center=activeBounds.getCenter(new THREE.Vector3()); agent.velocity.lerp(center.sub(agent.position).normalize().multiplyScalar(template.speed),0.42);
+      } else agent.position.copy(next);
+      dummyObject.position.copy(agent.position); dummyObject.lookAt(agent.position.clone().add(agent.velocity)); dummyObject.updateMatrix(); simMesh!.setMatrixAt(index,dummyObject.matrix);
+    });
+    simMesh.instanceMatrix.needsUpdate=true;
+  }
   renderer.render(scene, camera);
   animationFrame = requestAnimationFrame(render);
 }
@@ -425,6 +545,7 @@ Object.assign(window as unknown as { __aquariumMaker?: unknown }, {
 window.addEventListener('beforeunload', () => {
   window.clearTimeout(rebuildTimer);
   if (animationFrame) cancelAnimationFrame(animationFrame);
+  clearPreviewHelpers();
   currentBuild?.dispose();
   ground.geometry.dispose();
   (ground.material as THREE.Material).dispose();

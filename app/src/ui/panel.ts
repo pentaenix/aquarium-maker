@@ -87,10 +87,14 @@ const RANGE_DEFINITIONS: RangeDefinition[] = [
   { key: 'waveStrength', label: 'Wave definition', min: 0, max: 1, step: 0.01, format: percent },
   { key: 'waterSurfaceStyle', label: 'Surface character', min: 0, max: 1, step: 0.01, format: surfaceLabel },
   { key: 'waterWaveScale', label: 'Wave size', min: 0, max: 1, step: 0.01, format: (value) => value < 0.34 ? 'Broad' : value < 0.67 ? 'Medium' : 'Fine' },
+  { key: 'waterAnimationSpeed', label: 'Animation speed', min: 0, max: 2, step: 0.01, format: (value) => `${value.toFixed(2)}×` },
+  { key: 'waterAnimationAmount', label: 'Surface motion', min: 0, max: 0.08, step: 0.001, unit: 'm' },
   { key: 'sandVariation', label: 'Color variation', min: 0, max: 1, step: 0.01, format: percent },
   { key: 'sandGrain', label: 'Grain scale', min: 0.1, max: 2.5, step: 0.05, format: (value) => value.toFixed(2) },
-  { key: 'groundIrregularity', label: 'Floor irregularity', min: 0, max: 0.6, step: 0.005, unit: 'm', structural: true },
-  { key: 'groundMoundSize', label: 'Mound size', min: 0.25, max: 8, step: 0.05, unit: 'm', structural: true },
+  { key: 'groundIrregularity', label: 'Fine irregularity', min: 0, max: 0.6, step: 0.005, unit: 'm', structural: true },
+  { key: 'groundMoundHeight', label: 'Mound height', min: 0, max: 5, step: 0.05, unit: 'm', structural: true },
+  { key: 'groundMoundSize', label: 'Mound radius', min: 0.25, max: 8, step: 0.05, unit: 'm', structural: true },
+  { key: 'groundWallFalloff', label: 'Wall falloff', min: 0, max: 3, step: 0.05, unit: 'm', structural: true },
   { key: 'groundMoundCount', label: 'Mound count', min: 1, max: 10, step: 1, structural: true, format: (value) => `${Math.round(value)} forms` },
   { key: 'groundTerrainDetail', label: 'Terrain detail', min: 0, max: 3, step: 1, structural: true, format: (value) => ['Low', 'Medium', 'High', 'Very high'][Math.round(value)]! },
   { key: 'baseHeight', label: 'Base thickness', min: 0.02, max: 0.5, step: 0.005, unit: 'm', structural: true },
@@ -120,6 +124,7 @@ const PASSAGE_RANGES: PassageRangeDefinition[] = [
   { key: 'alcoveDepth', label: 'Alcove depth', min: 0.6, max: 10, step: 0.05, unit: 'm' },
   { key: 'wallHeight', label: 'Straight wall height', min: 0.35, max: 5, step: 0.05, unit: 'm' },
   { key: 'roundness', label: 'Roof shape', min: 0, max: 1.35, step: 0.01, format: tunnelShapeLabel },
+  { key: 'bendRadius', label: 'L-corner radius', min: 0, max: 6, step: 0.05, unit: 'm' },
   { key: 'glassThickness', label: 'Passage acrylic', min: 0.025, max: 0.25, step: 0.005, unit: 'm' },
   { key: 'curveSegments', label: 'Arch quality', min: 5, max: 24, step: 1, format: (value) => `${Math.round(value)} segments` },
   { key: 'endExtension', label: 'Portal extension', min: 0, max: 0.8, step: 0.01, unit: 'm' },
@@ -152,7 +157,7 @@ function passageRangeMarkup(key: keyof PassageSettings): string {
   </div>`;
 }
 
-function colorMarkup(key: 'waterColor' | 'sandColor' | 'subFloorBodyColor', label: string): string {
+function colorMarkup(key: 'waterColor' | 'sandColor' | 'subFloorBodyColor' | 'solidWallColor', label: string): string {
   return `<div class="color-row"><label for="${key}-color">${label}</label><div class="color-control"><input id="${key}-color" data-color-key="${key}" type="color" /><input id="${key}-text" data-color-text-key="${key}" type="text" maxlength="7" spellcheck="false" /></div></div>`;
 }
 
@@ -272,6 +277,7 @@ export class ControlPanel {
             <div class="corner-mode-selector"><button type="button" data-corner-mode="rounded"><span class="mode-icon mode-rounded"></span>Rounded</button><button type="button" data-corner-mode="chamfer"><span class="mode-icon mode-chamfer"></span>Flat pane</button><button type="button" data-corner-mode="square"><span class="mode-icon mode-square"></span>Square</button></div>
             <div id="corner-radius-control" class="corner-radius-pair"><input class="corner-range" id="corner-range" type="range" min="0.002" max="2" step="0.01" /><div class="number-wrap"><input id="corner-number" type="number" min="0.001" step="0.01" /><span>m</span></div></div><div class="corner-values" id="corner-values"></div></div>${rangeMarkup('curveSegments')}
           `)}
+          ${card('Wall construction', 'Make any cardinal face opaque while keeping the same water volume', `<div class="wall-mode-grid">${(['front','back','left','right'] as PassageSide[]).map((side) => `<button type="button" data-wall-side="${side}"><strong>${side[0]!.toUpperCase()+side.slice(1)}</strong><small>Glass</small></button>`).join('')}</div>${colorMarkup('solidWallColor', 'Solid wall color')}<p class="section-note">Solid panels are structural overlays. Passage openings remain clear where a tunnel enters that wall.</p>`)}
           ${card('Fish AI data', 'Navigation information is embedded in the GLB as named NAV nodes and glTF extras', `<div class="toggle-row"><div><strong>Download companion JSON</strong><span>Regions, portals, bounds, area, volume, spawn points, and dry passage paths</span></div><button class="switch" id="navigation-json" type="button" role="switch"><span></span></button></div><p class="section-note">The GLB always includes the same metadata. The JSON option simply makes it easier to inspect or import separately.</p>`)}
         </section>
 
@@ -298,7 +304,7 @@ export class ControlPanel {
               <div class="shape-subheading"><strong>Entrance wall</strong><span>World-facing side of the tank</span></div><div class="side-selector" id="entry-side-selector">${SIDES.map((side) => `<button type="button" data-entry-side="${side}">${SIDE_LABELS[side]}</button>`).join('')}</div>
               <div id="exit-side-block"><div class="shape-subheading"><strong>Exit wall</strong><span id="exit-side-hint">Opposite for straight tunnels; adjacent for L tunnels</span></div><div class="side-selector" id="exit-side-selector">${SIDES.map((side) => `<button type="button" data-exit-side="${side}">${SIDE_LABELS[side]}</button>`).join('')}</div></div>
               ${passageRangeMarkup('width')}${passageRangeMarkup('entryOffset')}<div id="passage-exit-offset">${passageRangeMarkup('exitOffset')}</div><div id="passage-alcove-depth">${passageRangeMarkup('alcoveDepth')}</div>${passageRangeMarkup('wallHeight')}
-              <div class="tunnel-shape-presets"><button type="button" data-passage-shape="square"><span class="tunnel-shape-icon shape-square"></span><strong>Square</strong></button><button type="button" data-passage-shape="soft"><span class="tunnel-shape-icon shape-soft"></span><strong>Soft</strong></button><button type="button" data-passage-shape="arch"><span class="tunnel-shape-icon shape-arch"></span><strong>Arch</strong></button></div>${passageRangeMarkup('roundness')}
+              <div class="tunnel-shape-presets"><button type="button" data-passage-shape="square"><span class="tunnel-shape-icon shape-square"></span><strong>Square</strong></button><button type="button" data-passage-shape="soft"><span class="tunnel-shape-icon shape-soft"></span><strong>Soft</strong></button><button type="button" data-passage-shape="arch"><span class="tunnel-shape-icon shape-arch"></span><strong>Arch</strong></button></div>${passageRangeMarkup('roundness')}<div id="passage-bend-radius">${passageRangeMarkup('bendRadius')}</div>
               <div id="passage-bridge-options"><div class="toggle-row"><div><strong>Acrylic bridge floor</strong><span>Water and substrate continue below the walkable floor</span></div><button class="switch" id="passage-glass-floor" type="button" role="switch"><span></span></button></div>${passageRangeMarkup('sideRimWidth')}${passageRangeMarkup('bridgeRimHeight')}${passageRangeMarkup('separatorSpacing')}${passageRangeMarkup('separatorWidth')}</div>
               <details class="advanced-block"><summary>Advanced passage geometry</summary>${passageRangeMarkup('glassThickness')}${passageRangeMarkup('curveSegments')}${passageRangeMarkup('endExtension')}${passageRangeMarkup('portalFrameWidth')}${passageRangeMarkup('portalFrameDepth')}${passageRangeMarkup('waterClearance')}</details>
               <p class="section-note">For U tanks, place separate passages at the center of each arm. L routes use one offset per wall, so their bend moves naturally as either entrance is repositioned.</p>
@@ -308,12 +314,13 @@ export class ControlPanel {
 
         <section class="tab-pane" data-tab-panel="water" hidden>
           ${card('Water surface', 'Visual presets remain editable after selection', `<div class="water-style-presets"><button type="button" data-water-preset="calm"><span class="water-swatch water-calm"></span><strong>Calm</strong><small>Broad and quiet</small></button><button type="button" data-water-preset="realistic"><span class="water-swatch water-realistic"></span><strong>Realistic</strong><small>Fine ripples</small></button><button type="button" data-water-preset="balanced"><span class="water-swatch water-balanced"></span><strong>Balanced</strong><small>Readable game water</small></button><button type="button" data-water-preset="cartoon"><span class="water-swatch water-cartoon"></span><strong>Cartoon</strong><small>Graphic highlights</small></button><button type="button" data-water-preset="pixel"><span class="water-swatch water-pixel"></span><strong>Pixel</strong><small>Stepped block waves</small></button></div>${colorMarkup('waterColor', 'Water color')}${rangeMarkup('waterTint')}${rangeMarkup('waterSurfaceStyle')}${rangeMarkup('waveStrength')}${rangeMarkup('waterWaveScale')}`)}
+          ${card('Cheap animation', 'Two scrolling texture layers and subtle surface motion; no fluid simulation', `<div class="toggle-row"><div><strong>Animate surface</strong><span>Viewport preview and export metadata</span></div><button class="switch" id="water-animation" type="button" role="switch"><span></span></button></div>${rangeMarkup('waterAnimationSpeed')}${rangeMarkup('waterAnimationAmount')}`)}
           ${card('Water placement', 'Touch-pool depth is controlled in Height', `<div id="standard-water-level">${rangeMarkup('waterLevel')}</div>`)}
         </section>
 
         <section class="tab-pane" data-tab-panel="ground" hidden>
           ${card('Ground material', 'Choose a substrate, then tune its procedural texture', `<div class="ground-presets"><button type="button" data-ground-preset="sand"><strong>Sand</strong><small>Warm and soft</small></button><button type="button" data-ground-preset="dirt"><strong>Dirt</strong><small>Dark organic soil</small></button><button type="button" data-ground-preset="algae"><strong>Algae</strong><small>Muted green growth</small></button><button type="button" data-ground-preset="gravel"><strong>Gravel</strong><small>Coarse mixed stones</small></button></div>${colorMarkup('sandColor', 'Ground color')}${rangeMarkup('sandVariation')}${rangeMarkup('sandGrain')}`)}
-          ${card('Floor shape', 'Actual mesh deformation produces low hills, banks, and irregular forms', `${rangeMarkup('groundIrregularity')}${rangeMarkup('groundMoundSize')}${rangeMarkup('groundMoundCount')}${rangeMarkup('groundTerrainDetail')}<div class="action-row"><button class="button button-quiet" id="randomize-ground" type="button">New terrain seed</button></div>`)}
+          ${card('Floor shape', 'Actual mesh deformation produces low hills, banks, and irregular forms', `${rangeMarkup('groundIrregularity')}${rangeMarkup('groundMoundHeight')}${rangeMarkup('groundMoundSize')}${rangeMarkup('groundMoundCount')}${rangeMarkup('groundWallFalloff')}${rangeMarkup('groundTerrainDetail')}<div class="action-row"><button class="button button-quiet" id="randomize-ground" type="button">New terrain seed</button></div>`)}
         </section>
       </div>`;
   }
@@ -331,8 +338,8 @@ export class ControlPanel {
     }));
     this.root.querySelectorAll<HTMLInputElement>('[data-range-key]').forEach((input) => input.addEventListener('input', () => this.applyNumeric(input.dataset.rangeKey as keyof AquariumSettings, input.value)));
     this.root.querySelectorAll<HTMLInputElement>('[data-number-key]').forEach((input) => input.addEventListener('change', () => this.applyNumeric(input.dataset.numberKey as keyof AquariumSettings, input.value)));
-    this.root.querySelectorAll<HTMLInputElement>('[data-color-key]').forEach((input) => input.addEventListener('input', () => this.applyColor(input.dataset.colorKey as 'waterColor' | 'sandColor' | 'subFloorBodyColor', input.value)));
-    this.root.querySelectorAll<HTMLInputElement>('[data-color-text-key]').forEach((input) => input.addEventListener('change', () => { if (/^#[0-9a-f]{6}$/i.test(input.value)) this.applyColor(input.dataset.colorTextKey as 'waterColor' | 'sandColor' | 'subFloorBodyColor', input.value); else this.refresh(); }));
+    this.root.querySelectorAll<HTMLInputElement>('[data-color-key]').forEach((input) => input.addEventListener('input', () => this.applyColor(input.dataset.colorKey as 'waterColor' | 'sandColor' | 'subFloorBodyColor' | 'solidWallColor', input.value)));
+    this.root.querySelectorAll<HTMLInputElement>('[data-color-text-key]').forEach((input) => input.addEventListener('change', () => { if (/^#[0-9a-f]{6}$/i.test(input.value)) this.applyColor(input.dataset.colorTextKey as 'waterColor' | 'sandColor' | 'subFloorBodyColor' | 'solidWallColor', input.value); else this.refresh(); }));
 
     this.root.querySelector<HTMLButtonElement>('#rotate-layout')!.addEventListener('click', () => {
       const oldRotation = this.settings.footprintRotation;
@@ -377,6 +384,8 @@ export class ControlPanel {
       normalizeSettings(this.settings); this.refreshCornerEditor(); this.callbacks.onChange(this.settings, true);
     }));
     this.root.querySelector<HTMLButtonElement>('#navigation-json')!.addEventListener('click', () => { this.settings.exportNavigationJson = !this.settings.exportNavigationJson; this.refresh(); this.callbacks.onChange(this.settings, false); });
+    this.root.querySelectorAll<HTMLButtonElement>('[data-wall-side]').forEach((button) => button.addEventListener('click', () => { const side = button.dataset.wallSide as PassageSide; this.settings.wallModes[side] = this.settings.wallModes[side] === 'solid' ? 'glass' : 'solid'; this.refresh(); this.callbacks.onChange(this.settings, true); }));
+    this.root.querySelector<HTMLButtonElement>('#water-animation')!.addEventListener('click', () => { this.settings.waterAnimationEnabled = !this.settings.waterAnimationEnabled; this.refresh(); this.callbacks.onChange(this.settings, false); });
 
     this.root.querySelectorAll<HTMLButtonElement>('[data-add-passage]').forEach((button) => button.addEventListener('click', () => {
       if (!tunnelAllowed(this.settings)) return;
@@ -562,7 +571,7 @@ export class ControlPanel {
     normalizeSettings(this.settings); this.refreshPassageEditor(); this.refreshLayoutPreview(); this.callbacks.onChange(this.settings, true);
   }
 
-  private applyColor(key: 'waterColor' | 'sandColor' | 'subFloorBodyColor', value: string): void {
+  private applyColor(key: 'waterColor' | 'sandColor' | 'subFloorBodyColor' | 'solidWallColor', value: string): void {
     this.settings[key] = value; this.refresh(); this.callbacks.onChange(this.settings, key === 'subFloorBodyColor');
   }
 
@@ -741,6 +750,7 @@ export class ControlPanel {
     this.root.querySelector<HTMLElement>('#passage-route-label')!.textContent = passage.kind === 'alcove' ? 'One entrance · closed glass end' : passage.route === 'elbow' ? 'One 90° bend' : 'Straight route';
     this.root.querySelector<HTMLElement>('#exit-side-block')!.hidden = passage.kind === 'alcove';
     this.root.querySelector<HTMLElement>('#passage-exit-offset')!.hidden = passage.kind === 'alcove' || passage.route === 'straight';
+    const bendControl = this.root.querySelector<HTMLElement>('#passage-bend-radius'); if (bendControl) bendControl.hidden = passage.route !== 'elbow';
     this.root.querySelector<HTMLElement>('#passage-alcove-depth')!.hidden = passage.kind !== 'alcove';
     this.root.querySelector<HTMLElement>('#passage-bridge-options')!.hidden = this.settings.profile !== 'belowFloor';
     this.root.querySelectorAll<HTMLButtonElement>('[data-entry-side]').forEach((button) => button.classList.toggle('is-active', button.dataset.entrySide === passage.entrySide));

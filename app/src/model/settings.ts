@@ -16,6 +16,8 @@ export type FootprintRotation = 0 | 90 | 180 | 270;
 export type PassageKind = 'tunnel' | 'alcove';
 export type PassageRoute = 'straight' | 'elbow';
 export type PassageSide = 'front' | 'back' | 'left' | 'right';
+export type WallMode = 'glass' | 'solid';
+export type FishSimulationPreset = 'school' | 'reef' | 'large' | 'ray' | 'dolphin' | 'otter' | 'bottom';
 
 export interface PassageSettings {
   id: string;
@@ -30,6 +32,7 @@ export interface PassageSettings {
   width: number;
   wallHeight: number;
   roundness: number;
+  bendRadius: number;
   glassThickness: number;
   curveSegments: number;
   endExtension: number;
@@ -164,7 +167,9 @@ export interface AquariumSettings {
   sandGrain: number;
   sandSeed: number;
   groundIrregularity: number;
+  groundMoundHeight: number;
   groundMoundSize: number;
+  groundWallFalloff: number;
   groundMoundCount: number;
   groundTerrainDetail: number;
 
@@ -177,6 +182,16 @@ export interface AquariumSettings {
   waterWaveScale: number;
   waterSurfacePreset: WaterSurfacePreset;
   waterSeed: number;
+  waterAnimationEnabled: boolean;
+  waterAnimationSpeed: number;
+  waterAnimationAmount: number;
+
+  wallModes: Record<PassageSide, WallMode>;
+  solidWallColor: string;
+  navOverlayEnabled: boolean;
+  navOverlayClearance: number;
+  fishSimulationEnabled: boolean;
+  fishSimulationPreset: FishSimulationPreset;
 
   // Legacy single-tunnel editor defaults. They are also used when creating a
   // new passage and keep old saved configurations working.
@@ -295,7 +310,9 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   sandGrain: 0.52,
   sandSeed: 13579,
   groundIrregularity: 0.045,
+  groundMoundHeight: 0.35,
   groundMoundSize: 1.35,
+  groundWallFalloff: 0.45,
   groundMoundCount: 3,
   groundTerrainDetail: 2,
 
@@ -308,6 +325,16 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   waterWaveScale: 0.46,
   waterSurfacePreset: 'balanced',
   waterSeed: 94817,
+  waterAnimationEnabled: true,
+  waterAnimationSpeed: 0.55,
+  waterAnimationAmount: 0.018,
+
+  wallModes: { front: 'glass', back: 'glass', left: 'glass', right: 'glass' },
+  solidWallColor: '#4f5961',
+  navOverlayEnabled: false,
+  navOverlayClearance: 0.1,
+  fishSimulationEnabled: false,
+  fishSimulationPreset: 'school',
 
   tunnelEnabled: false,
   tunnelAxis: 'depth',
@@ -344,6 +371,7 @@ export function cloneSettings(source: AquariumSettings = DEFAULT_SETTINGS): Aqua
     shapeCornerRadii: { ...source.shapeCornerRadii },
     shapeCornerModes: { ...source.shapeCornerModes },
     passages: (source.passages ?? []).map(clonePassage),
+    wallModes: { ...(source.wallModes ?? DEFAULT_SETTINGS.wallModes) },
   };
 }
 
@@ -368,6 +396,7 @@ export function createPassage(
     width: settings.tunnelWidth,
     wallHeight: settings.tunnelWallHeight,
     roundness: settings.tunnelRoundness,
+    bendRadius: Math.max(0.15, settings.tunnelWidth * 0.35),
     glassThickness: settings.tunnelGlassThickness,
     curveSegments: settings.tunnelCurveSegments,
     endExtension: settings.tunnelEndExtension,
@@ -470,6 +499,7 @@ function normalizePassage(passage: PassageSettings, settings: AquariumSettings, 
   normalized.width = atLeast(normalized.width, 0.2, settings.tunnelWidth);
   normalized.wallHeight = atLeast(normalized.wallHeight, 0.15, settings.tunnelWallHeight);
   normalized.roundness = clamp(normalized.roundness, 0, 4, settings.tunnelRoundness);
+  normalized.bendRadius = atLeast(normalized.bendRadius, 0, Math.max(0.15, normalized.width * 0.35));
   normalized.glassThickness = atLeast(normalized.glassThickness, 0.005, settings.tunnelGlassThickness);
   normalized.curveSegments = Math.round(clamp(normalized.curveSegments, 3, 64, settings.tunnelCurveSegments));
   normalized.endExtension = atLeast(normalized.endExtension, 0, settings.tunnelEndExtension);
@@ -590,7 +620,9 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.sandVariation = clamp(settings.sandVariation, 0, 1, DEFAULT_SETTINGS.sandVariation);
   settings.sandGrain = clamp(settings.sandGrain, 0.02, 20, DEFAULT_SETTINGS.sandGrain);
   settings.groundIrregularity = clamp(settings.groundIrregularity, 0, Math.max(0.001, activeHeight * 0.3), DEFAULT_SETTINGS.groundIrregularity);
+  settings.groundMoundHeight = atLeast(settings.groundMoundHeight ?? settings.groundIrregularity, 0, DEFAULT_SETTINGS.groundMoundHeight);
   settings.groundMoundSize = atLeast(settings.groundMoundSize, 0.05, DEFAULT_SETTINGS.groundMoundSize);
+  settings.groundWallFalloff = atLeast(settings.groundWallFalloff ?? DEFAULT_SETTINGS.groundWallFalloff, 0, DEFAULT_SETTINGS.groundWallFalloff);
   settings.groundMoundCount = Math.round(clamp(settings.groundMoundCount, 1, 50, DEFAULT_SETTINGS.groundMoundCount));
   settings.groundTerrainDetail = Math.round(clamp(settings.groundTerrainDetail, 0, 4, DEFAULT_SETTINGS.groundTerrainDetail));
   if (!isHexColor(settings.sandColor)) settings.sandColor = DEFAULT_SETTINGS.sandColor;
@@ -602,7 +634,22 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.waterSurfaceStyle = clamp(settings.waterSurfaceStyle, 0, 1, DEFAULT_SETTINGS.waterSurfaceStyle);
   settings.waterWaveScale = clamp(settings.waterWaveScale, 0, 1, DEFAULT_SETTINGS.waterWaveScale);
   if (!isWaterSurfacePreset(settings.waterSurfacePreset)) settings.waterSurfacePreset = DEFAULT_SETTINGS.waterSurfacePreset;
+  settings.waterAnimationEnabled = settings.waterAnimationEnabled !== false;
+  settings.waterAnimationSpeed = atLeast(settings.waterAnimationSpeed ?? DEFAULT_SETTINGS.waterAnimationSpeed, 0, DEFAULT_SETTINGS.waterAnimationSpeed);
+  settings.waterAnimationAmount = atLeast(settings.waterAnimationAmount ?? DEFAULT_SETTINGS.waterAnimationAmount, 0, DEFAULT_SETTINGS.waterAnimationAmount);
   if (!isHexColor(settings.waterColor)) settings.waterColor = DEFAULT_SETTINGS.waterColor;
+  const wallModes = settings.wallModes ?? DEFAULT_SETTINGS.wallModes;
+  settings.wallModes = {
+    front: wallModes.front === 'solid' ? 'solid' : 'glass',
+    back: wallModes.back === 'solid' ? 'solid' : 'glass',
+    left: wallModes.left === 'solid' ? 'solid' : 'glass',
+    right: wallModes.right === 'solid' ? 'solid' : 'glass',
+  };
+  if (!isHexColor(settings.solidWallColor)) settings.solidWallColor = DEFAULT_SETTINGS.solidWallColor;
+  settings.navOverlayEnabled = Boolean(settings.navOverlayEnabled);
+  settings.navOverlayClearance = atLeast(settings.navOverlayClearance ?? 0.1, 0, 0.1);
+  settings.fishSimulationEnabled = Boolean(settings.fishSimulationEnabled);
+  if (!['school','reef','large','ray','dolphin','otter','bottom'].includes(settings.fishSimulationPreset)) settings.fishSimulationPreset = 'school';
 
   settings.tunnelEnabled = Boolean(settings.tunnelEnabled) && tunnelAllowed(settings);
   if (!isTunnelAxis(settings.tunnelAxis)) settings.tunnelAxis = 'depth';
