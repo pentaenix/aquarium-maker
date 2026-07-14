@@ -18,6 +18,29 @@ export type PassageRoute = 'straight' | 'elbow';
 export type PassageSide = 'front' | 'back' | 'left' | 'right';
 export type WallMode = 'glass' | 'solid';
 export type FishSimulationPreset = 'school' | 'reef' | 'large' | 'ray' | 'dolphin' | 'otter' | 'bottom';
+export type FishSimulationBehavior = 'schooling' | 'cruising' | 'wandering';
+export type DecorKind = 'boulder' | 'rockCluster' | 'rockArch' | 'rockShelf' | 'kelp' | 'seagrass' | 'algae';
+export type RockFormationStyle = 'eroded' | 'strata';
+
+export interface DecorItemSettings {
+  id: string;
+  name: string;
+  kind: DecorKind;
+  rockStyle: RockFormationStyle;
+  x: number;
+  /** Floor-relative elevation. Negative values sink decor into the substrate. */
+  y: number;
+  z: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+  scaleZ: number;
+  /** Legacy uniform scale accepted when migrating older saved configurations. */
+  scale?: number;
+  density: number;
+  seed: number;
+  autoPlace: boolean;
+}
 
 export interface PassageSettings {
   id: string;
@@ -192,6 +215,11 @@ export interface AquariumSettings {
   navOverlayClearance: number;
   fishSimulationEnabled: boolean;
   fishSimulationPreset: FishSimulationPreset;
+  fishSimulationCount: number;
+  fishSimulationSize: number;
+  fishSimulationBehavior: FishSimulationBehavior;
+
+  decor: DecorItemSettings[];
 
   // Legacy single-tunnel editor defaults. They are also used when creating a
   // new passage and keep old saved configurations working.
@@ -335,6 +363,11 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
   navOverlayClearance: 0.1,
   fishSimulationEnabled: false,
   fishSimulationPreset: 'school',
+  fishSimulationCount: 80,
+  fishSimulationSize: 1,
+  fishSimulationBehavior: 'schooling',
+
+  decor: [],
 
   tunnelEnabled: false,
   tunnelAxis: 'depth',
@@ -371,7 +404,36 @@ export function cloneSettings(source: AquariumSettings = DEFAULT_SETTINGS): Aqua
     shapeCornerRadii: { ...source.shapeCornerRadii },
     shapeCornerModes: { ...source.shapeCornerModes },
     passages: (source.passages ?? []).map(clonePassage),
+    decor: (source.decor ?? []).map((item) => ({ ...item })),
     wallModes: { ...(source.wallModes ?? DEFAULT_SETTINGS.wallModes) },
+  };
+}
+
+export function createDecorItem(
+  kind: DecorKind,
+  index: number,
+  x = 0,
+  z = 0,
+): DecorItemSettings {
+  const labels: Record<DecorKind, string> = {
+    boulder: 'Volcanic boulder', rockCluster: 'Basalt cluster', rockArch: 'Rock arch', rockShelf: 'Rock shelf',
+    kelp: 'Kelp grove', seagrass: 'Seagrass patch', algae: 'Algae cluster',
+  };
+  return {
+    id: `decor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    name: `${labels[kind]} ${index}`,
+    kind,
+    rockStyle: 'eroded',
+    x,
+    y: 0,
+    z,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    scaleZ: 1,
+    density: kind === 'rockArch' || kind === 'rockShelf' ? 1 : kind === 'boulder' ? 3 : kind === 'kelp' ? 11 : 8,
+    seed: Math.floor(Math.random() * 1_000_000_000) + 1,
+    autoPlace: true,
   };
 }
 
@@ -650,6 +712,31 @@ export function normalizeSettings(settings: AquariumSettings): AquariumSettings 
   settings.navOverlayClearance = atLeast(settings.navOverlayClearance ?? 0.1, 0, 0.1);
   settings.fishSimulationEnabled = Boolean(settings.fishSimulationEnabled);
   if (!['school','reef','large','ray','dolphin','otter','bottom'].includes(settings.fishSimulationPreset)) settings.fishSimulationPreset = 'school';
+  settings.fishSimulationCount = Math.round(clamp(settings.fishSimulationCount ?? DEFAULT_SETTINGS.fishSimulationCount, 1, 240, DEFAULT_SETTINGS.fishSimulationCount));
+  settings.fishSimulationSize = clamp(settings.fishSimulationSize ?? DEFAULT_SETTINGS.fishSimulationSize, 0.35, 2.5, DEFAULT_SETTINGS.fishSimulationSize);
+  if (!['schooling', 'cruising', 'wandering'].includes(settings.fishSimulationBehavior)) settings.fishSimulationBehavior = 'schooling';
+
+  settings.decor = Array.isArray(settings.decor) ? settings.decor.map((item, index) => {
+    const kind: DecorKind = ['boulder', 'rockCluster', 'rockArch', 'rockShelf', 'kelp', 'seagrass', 'algae'].includes(item?.kind)
+      ? item.kind
+      : 'boulder';
+    return {
+      id: typeof item?.id === 'string' && item.id ? item.id : `decor-${index + 1}`,
+      name: typeof item?.name === 'string' && item.name.trim() ? item.name.slice(0, 48) : `Decor ${index + 1}`,
+      kind,
+      rockStyle: item?.rockStyle === 'strata' ? 'strata' : 'eroded',
+      x: Number.isFinite(item?.x) ? item.x : 0,
+      y: Number.isFinite(item?.y) ? item.y : 0,
+      z: Number.isFinite(item?.z) ? item.z : 0,
+      rotation: Number.isFinite(item?.rotation) ? item.rotation : 0,
+      scaleX: clamp(item?.scaleX ?? item?.scale ?? 1, 0.2, 4, 1),
+      scaleY: clamp(item?.scaleY ?? item?.scale ?? 1, 0.2, 4, 1),
+      scaleZ: clamp(item?.scaleZ ?? item?.scale ?? 1, 0.2, 4, 1),
+      density: Math.round(clamp(item?.density ?? 6, 1, 24, 6)),
+      seed: Math.round(clamp(item?.seed ?? index * 7919 + 17, 1, 2_147_483_647, index * 7919 + 17)),
+      autoPlace: item?.autoPlace === true,
+    };
+  }) : [];
 
   settings.tunnelEnabled = Boolean(settings.tunnelEnabled) && tunnelAllowed(settings);
   if (!isTunnelAxis(settings.tunnelAxis)) settings.tunnelAxis = 'depth';

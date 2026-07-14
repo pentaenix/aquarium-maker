@@ -6,6 +6,7 @@ import type { MultiPolygon, Polygon as ClipPolygon, Ring } from 'polygon-clippin
 import type { AquariumSettings, CornerMode, CornerModes, CornerRadii, PassageSettings, PassageSide, ShapeCornerKey, TunnelAxis } from './settings';
 import { activePassages } from './settings';
 import { createGroundTexture, createWaterTextures } from './textures';
+import { buildDecorItem, type DecorCollision } from './decor';
 
 export interface AquariumBuild {
   group: THREE.Group;
@@ -328,6 +329,12 @@ function rectanglePolygon(x0: number, z0: number, x1: number, z1: number): ClipP
   return [[
     [x0, z0], [x1, z0], [x1, z1], [x0, z1], [x0, z0],
   ]];
+}
+
+function orientedRectanglePolygon(collision: DecorCollision): ClipPolygon {
+  const [halfX, halfZ] = collision.halfExtents; const cos = Math.cos(collision.rotation); const sin = Math.sin(collision.rotation);
+  const corners: Array<[number, number]> = [[-halfX, -halfZ], [halfX, -halfZ], [halfX, halfZ], [-halfX, halfZ]];
+  const ring: Ring = corners.map(([x, z]) => [collision.center[0] + cos * x + sin * z, collision.center[2] - sin * x + cos * z]); ring.push([ring[0]![0], ring[0]![1]]); return [ring];
 }
 
 function cleanRing(ring: Ring): Ring {
@@ -1556,6 +1563,7 @@ function buildNavigationMetadata(
   waterBottom: number,
   waterTop: number,
   passages: ResolvedPassage[],
+  decorCollisions: DecorCollision[],
 ): Record<string, unknown> {
   const box = new THREE.Box2().setFromPoints(waterLoop);
   const area = polygonArea(waterLoop);
@@ -1565,6 +1573,10 @@ function buildNavigationMetadata(
     waterTop,
     ...passages.map((passage) => THREE.MathUtils.clamp(passage.voidBottom, waterBottom, waterTop)),
     ...passages.map((passage) => THREE.MathUtils.clamp(passage.crown, waterBottom, waterTop)),
+    ...decorCollisions.flatMap((collision) => [
+      THREE.MathUtils.clamp(collision.yBottom, waterBottom, waterTop),
+      THREE.MathUtils.clamp(collision.yTop, waterBottom, waterTop),
+    ]),
   ];
   const sortedNavigationLevels = [...new Set(navigationLevels.map((value) => Number(value.toFixed(6))))].sort((a, b) => a - b);
   const swimVolumeLayers = sortedNavigationLevels.slice(0, -1).flatMap((bottom, index) => {
@@ -1574,8 +1586,12 @@ function buildNavigationMetadata(
       .filter((passage) => top > passage.voidBottom + EPSILON && bottom < passage.crown - EPSILON)
       .map(navigationDryPolygon)
       .filter((polygon) => polygon.length > 0);
-    const polygons = dry.length
-      ? difference([loopPolygon(waterLoop)] as MultiPolygon, ...dry)
+    const decorDry = decorCollisions
+      .filter((collision) => top > collision.yBottom + EPSILON && bottom < collision.yTop - EPSILON)
+      .map(orientedRectanglePolygon);
+    const exclusions = [...dry, ...decorDry];
+    const polygons = exclusions.length
+      ? difference([loopPolygon(waterLoop)] as MultiPolygon, ...exclusions)
       : [loopPolygon(waterLoop)] as MultiPolygon;
     return polygons.length > 0 ? [{ yBottom: bottom, yTop: top, polygons }] : [];
   });
@@ -1615,7 +1631,7 @@ function buildNavigationMetadata(
   }
   const data: Record<string, unknown> = {
     schema: 'aquarium-maker-navigation',
-    schemaVersion: 3,
+    schemaVersion: 4,
     coordinateSystem: { units: 'meters', up: '+Y', front: '+Z', floorLevelY: 0 },
     profile: settings.profile,
     footprint: settings.footprint,
@@ -1627,7 +1643,7 @@ function buildNavigationMetadata(
     waterSurfaceAreaM2: area,
     approximateWaterVolumeM3: Math.max(0, area * depth - passageVoidVolume),
     recommendedMaxFishRadiusM: Math.max(0.05, Math.min(settings.glassThickness + settings.waterWallGap, Math.min(settings.width, settings.depth) * 0.08)),
-    collisionGuidance: 'Use swimVolumeLayers as the authoritative navigation volume. Between each tunnel void floor and crown, arches are simplified to their widest footprint; water above a crown and below a glass-floor bridge remains navigable.',
+    collisionGuidance: 'Use swimVolumeLayers as the authoritative navigation volume. Tunnel arches use their widest footprint only between floor and crown. Rock decor uses tight oriented boxes with a minimal safety margin; plants are non-blocking.',
     suggestedSpawnPoints: regions.map((region, index) => {
       const polygon = region.polygon as number[][];
       const sx = polygon.reduce((sum, point) => sum + point[0]!, 0) / Math.max(1, polygon.length);
@@ -1659,6 +1675,7 @@ function buildNavigationMetadata(
         dryVolume: 'widest tunnel footprint between its void floor and crown; water above and below it remains navigable',
       };
     }),
+    decorObstacles: decorCollisions.map((collision) => ({ ...collision, shape: 'orientedBox' })),
   };
   const navRoot = new THREE.Group();
   navRoot.name = 'NAV_Aquarium';
@@ -1939,6 +1956,9 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     Math.max(waterBottom + navClearance, terrainMaximum + navClearance),
   );
   let resolvedPassages: ResolvedPassage[] = [];
+  let decorFloorY = sandTop;
+  let decorWaterTop = waterTop;
+  let decorPlacementRegion = waterRegion;
 
   if (settings.profile === 'touchPool') {
     const rimInner = createFootprintShapeLoop(settings, -settings.touchRimWidth);
@@ -1959,6 +1979,9 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     addMesh('STRUCTURE_TouchRim', makePolygonPrism(rimRegion, rimBottom, profileTop), frameMaterial);
     addGround(asMulti(basinLoop), touchGroundBottom, touchGroundTop);
     addWater(asMulti(basinLoop), touchGroundTop - 0.012, touchWaterTop);
+    decorFloorY = touchGroundTop;
+    decorWaterTop = touchWaterTop;
+    decorPlacementRegion = asMulti(basinLoop);
     navigationWaterLoop = createFootprintShapeLoop(settings, -(settings.touchRimWidth + settings.touchBasinInset + navClearance));
     navigationWaterTop = touchWaterTop - navClearance;
     navigationWaterBottom = Math.min(
@@ -2093,6 +2116,85 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     surface.userData.waterAnimation = { enabled: settings.waterAnimationEnabled, speed: settings.waterAnimationSpeed, amount: settings.waterAnimationAmount, preset: settings.waterSurfacePreset };
   }
 
+  const decorCollisions: DecorCollision[] = [];
+  const activeDecorIds: string[] = [];
+  const invalidDecor: Array<{ id: string; reason: string }> = [];
+  for (const item of settings.decor) {
+    let built = buildDecorItem(item, decorFloorY);
+    const disposeBuilt = (): void => built.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      object.geometry.dispose();
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => material.dispose());
+    });
+    if (item.autoPlace && built.collision.yTop > decorWaterTop - 0.03) {
+      const availableHeight = Math.max(0.05, decorWaterTop - decorFloorY - item.y - 0.06);
+      const currentHeight = Math.max(0.05, built.collision.yTop - built.collision.yBottom);
+      const fittedScale = THREE.MathUtils.clamp(item.scaleY * availableHeight / currentHeight * 0.96, 0.2, item.scaleY);
+      if (fittedScale < item.scaleY - 0.001) {
+        disposeBuilt();
+        item.scaleY = fittedScale;
+        built = buildDecorItem(item, decorFloorY);
+      }
+    }
+    const placementAt = (x: number, z: number): { valid: boolean; reason: string } => {
+      const samples = [[x, z] as [number, number], ...built.placementFootprint.map(([sampleX, sampleZ]) => [sampleX + x - item.x, sampleZ + z - item.z] as [number, number])];
+      if (!samples.every(([sampleX, sampleZ]) => pointInMultiPolygon(sampleX, sampleZ, decorPlacementRegion))) return { valid: false, reason: 'outside water footprint' };
+      if (resolvedPassages.some((passage) => built.collision.yTop > passage.voidBottom + EPSILON
+        && built.collision.yBottom < passage.crown - EPSILON
+        && samples.some(([sampleX, sampleZ]) => pointInMultiPolygon(sampleX, sampleZ, passage.voidPolygon)))) return { valid: false, reason: 'intersects a passage' };
+      if (built.collision.yTop > decorWaterTop + 0.02) return { valid: false, reason: 'extends above the water' };
+      return { valid: true, reason: '' };
+    };
+    let placement = placementAt(item.x, item.z);
+    if (item.autoPlace && !placement.valid) {
+      const points = decorPlacementRegion.flat(2);
+      const minX = Math.min(...points.map((point) => point[0])); const maxX = Math.max(...points.map((point) => point[0]));
+      const minZ = Math.min(...points.map((point) => point[1])); const maxZ = Math.max(...points.map((point) => point[1]));
+      const candidates: Array<[number, number]> = [];
+      for (let row = 1; row <= 8; row += 1) for (let column = 1; column <= 12; column += 1) {
+        candidates.push([
+          THREE.MathUtils.lerp(minX, maxX, column / 13),
+          THREE.MathUtils.lerp(minZ, maxZ, row / 9),
+        ]);
+      }
+      const start = item.seed % Math.max(1, candidates.length);
+      for (let offset = 0; offset < candidates.length; offset += 1) {
+        const candidate = candidates[(start + offset) % candidates.length]!;
+        const result = placementAt(candidate[0], candidate[1]);
+        if (!result.valid) continue;
+        const deltaX = candidate[0] - item.x; const deltaZ = candidate[1] - item.z; item.x = candidate[0]; item.z = candidate[1];
+        built.group.position.x = item.x; built.group.position.z = item.z;
+        built.collision.center[0] += deltaX; built.collision.center[2] += deltaZ;
+        placement = result;
+        break;
+      }
+    }
+    item.autoPlace = false;
+    if (!placement.valid) {
+      const reason = placement.reason;
+      invalidDecor.push({ id: item.id, reason });
+      built.group.userData.previewOnly = true;
+      built.group.userData.invalidReason = reason;
+      built.group.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => material.dispose());
+        object.material = new THREE.MeshBasicMaterial({ color: '#ff5e48', transparent: true, opacity: 0.38, wireframe: true, depthWrite: false });
+      });
+      group.add(built.group);
+      continue;
+    }
+    group.add(built.group);
+    activeDecorIds.push(item.id);
+    if (item.kind === 'boulder' || item.kind === 'rockCluster' || item.kind === 'rockArch' || item.kind === 'rockShelf') decorCollisions.push(built.collision);
+  }
+  group.userData.decor = {
+    items: settings.decor.map((item) => ({ ...item })),
+    activeIds: activeDecorIds,
+    invalid: invalidDecor,
+  };
+
   const navigation = buildNavigationMetadata(
     group,
     settings,
@@ -2100,6 +2202,7 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
     navigationWaterBottom,
     navigationWaterTop,
     resolvedPassages,
+    decorCollisions,
   );
   group.userData.navigation = navigation;
 
@@ -2127,10 +2230,15 @@ export function buildAquarium(settings: AquariumSettings): AquariumBuild {
 function cloneForExport(source: THREE.Group, scale: number): THREE.Group {
   const clone = source.clone(true);
   clone.name = source.name;
+  const previewOnly: THREE.Object3D[] = [];
   clone.traverse((object) => {
+    if (object.userData.previewOnly) previewOnly.push(object);
+    object.position.multiplyScalar(scale);
+    object.updateMatrix();
     if (!(object instanceof THREE.Mesh)) return;
     object.geometry = object.geometry.clone();
     object.geometry.scale(scale, scale, scale);
+    object.geometry.normalizeNormals();
     const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
     const clonedMaterials = sourceMaterials.map((material) => {
       const cloned = material.clone();
@@ -2142,8 +2250,37 @@ function cloneForExport(source: THREE.Group, scale: number): THREE.Group {
     });
     object.material = Array.isArray(object.material) ? clonedMaterials : clonedMaterials[0]!;
   });
+  previewOnly.forEach((object) => {
+    object.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.geometry.dispose();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach((material) => material.dispose());
+    });
+    object.removeFromParent();
+  });
   clone.userData = { ...source.userData, outputUnitsPerMeter: scale };
   return clone;
+}
+
+function exportPlantAnimations(root: THREE.Group): THREE.AnimationClip[] {
+  const clips: THREE.AnimationClip[] = [];
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Group) || object.userData.animated !== true || typeof object.userData.decorId !== 'string') return;
+    const tracks: THREE.QuaternionKeyframeTrack[] = []; let part = 0;
+    object.traverse((child) => {
+      if (!(child instanceof THREE.Mesh) || child.userData.animated !== true) return;
+      part += 1; const baseAmplitude = child.userData.decorKind === 'kelp' ? 0.065 : child.userData.decorKind === 'seagrass' ? 0.04 : 0.05;
+      const amplitude = baseAmplitude * (0.72 + part * 0.11); const times = [0, 1.5, 3, 4.5, 6]; const angles = [0, amplitude, -amplitude * 0.72, amplitude * 0.48, 0]; const values: number[] = [];
+      for (const angle of angles) { const delta = new THREE.Quaternion().setFromEuler(new THREE.Euler(angle * 0.24, 0, angle)); const value = child.quaternion.clone().multiply(delta); values.push(value.x, value.y, value.z, value.w); }
+      tracks.push(new THREE.QuaternionKeyframeTrack(`${child.name}.quaternion`, times, values));
+    });
+    if (!tracks.length) return;
+    const clipName = `DECOR_${object.userData.decorId.replace(/[^a-z0-9]+/gi, '_')}_WaterSway`;
+    object.userData.animation = { clip: clipName, durationSeconds: 6, loop: true, anchoredAtPlacedTransform: true };
+    clips.push(new THREE.AnimationClip(clipName, 6, tracks));
+  });
+  return clips;
 }
 
 function disposeExportClone(group: THREE.Group): void {
@@ -2155,8 +2292,28 @@ function disposeExportClone(group: THREE.Group): void {
   });
 }
 
+function verifyExportedGLB(buffer: ArrayBuffer, exportGroup: THREE.Group, animations: THREE.AnimationClip[]): void {
+  const view = new DataView(buffer); if (view.getUint32(0, true) !== 0x46546c67) throw new Error('Export verification failed: invalid GLB header.');
+  const jsonLength = view.getUint32(12, true); const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 20, jsonLength)).replace(/\u0000/g, '').trim()) as {
+    nodes?: Array<{ name?: string; translation?: number[]; matrix?: number[] }>;
+    animations?: Array<{ name?: string; channels?: unknown[] }>;
+  };
+  const nodes = json.nodes ?? [];
+  exportGroup.traverse((object) => {
+    if (!(object instanceof THREE.Group) || typeof object.userData.decorId !== 'string' || object.userData.previewOnly) return;
+    const node = nodes.find((candidate) => candidate.name === object.name); if (!node) throw new Error(`Export verification failed: missing placed decor node ${object.name}.`);
+    const translation = node.translation ?? (node.matrix ? [node.matrix[12]!, node.matrix[13]!, node.matrix[14]!] : [0, 0, 0]);
+    if (Math.hypot(translation[0]! - object.position.x, translation[1]! - object.position.y, translation[2]! - object.position.z) > 1e-3) throw new Error(`Export verification failed: decor transform changed for ${object.name}.`);
+  });
+  for (const clip of animations) {
+    const encoded = json.animations?.find((animation) => animation.name === clip.name);
+    if (!encoded?.channels?.length) throw new Error(`Export verification failed: missing plant animation ${clip.name}.`);
+  }
+}
+
 export async function exportAquariumGLB(group: THREE.Group, scale: number): Promise<ArrayBuffer> {
   const exportGroup = cloneForExport(group, scale);
+  const animations = exportPlantAnimations(exportGroup);
   const exporter = new GLTFExporter();
   try {
     const result = await exporter.parseAsync(exportGroup, {
@@ -2164,8 +2321,10 @@ export async function exportAquariumGLB(group: THREE.Group, scale: number): Prom
       onlyVisible: true,
       trs: false,
       maxTextureSize: 2048,
+      animations,
     });
     if (!(result instanceof ArrayBuffer)) throw new Error('The exporter did not return a binary GLB.');
+    verifyExportedGLB(result, exportGroup, animations);
     return result;
   } finally {
     disposeExportClone(exportGroup);

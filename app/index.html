@@ -44,7 +44,7 @@
             <strong>3D preview unavailable</strong>
             <span>This browser could not start WebGL. Hardware acceleration may be disabled.</span>
           </div>
-          <div class="viewer-hint" id="viewer-hint">Drag to orbit · Scroll to zoom</div>
+          <div class="viewer-hint" id="viewer-hint">Drag decor to move · Drag empty space to orbit · Scroll to zoom</div>
           <div class="viewer-toolbar" role="toolbar" aria-label="Camera controls">
             <button type="button" data-view="iso" class="is-active" title="Isometric view">Iso</button>
             <button type="button" data-view="front" title="Front view">Front</button>
@@ -58,10 +58,19 @@
           <div class="viewer-debug-toolbar" role="toolbar" aria-label="Preview diagnostics">
             <button type="button" id="toggle-nav-overlay" title="Show green swim area">Nav area</button>
             <button type="button" id="toggle-fish-simulation" title="Simulate animals">Animals</button>
-            <select id="fish-preset" aria-label="Animal simulation template">
-              <option value="school">Small school</option><option value="reef">Reef fish</option><option value="large">Large creature</option><option value="ray">Ray</option><option value="dolphin">Dolphin</option><option value="otter">Sea otter</option><option value="bottom">Bottom dwellers</option>
-            </select>
+            <button type="button" id="open-fish-settings" title="Configure animal simulation">Configure</button>
           </div>
+          <dialog class="fish-dialog" id="fish-settings-dialog" aria-labelledby="fish-settings-title">
+            <form method="dialog" class="fish-dialog-card">
+              <div class="fish-dialog-heading"><div><strong id="fish-settings-title">Animal preview</strong><span>Preview-only agents stay inside the navigation volume.</span></div><button value="cancel" class="fish-dialog-close" aria-label="Close animal settings">×</button></div>
+              <label>Type<select id="fish-preset" aria-label="Animal simulation template"><option value="school">Small school</option><option value="reef">Reef fish</option><option value="large">Large creature</option><option value="ray">Ray</option><option value="dolphin">Dolphin</option><option value="otter">Sea otter</option><option value="bottom">Bottom dwellers</option></select></label>
+              <label>Units<input id="fish-count" type="number" min="1" max="240" step="1"></label>
+              <label>Size<input id="fish-size" type="range" min="0.35" max="2.5" step="0.05"><output id="fish-size-output"></output></label>
+              <label>Behaviour<select id="fish-behavior"><option value="schooling">Schooling</option><option value="cruising">Cruising</option><option value="wandering">Wandering</option></select></label>
+              <p>Agents are respawned at a verified safe point if they cannot recover from an obstacle.</p>
+              <div class="fish-dialog-actions"><button value="cancel" type="button" id="fish-settings-cancel">Cancel</button><button value="default" type="button" id="fish-settings-apply">Apply preview</button></div>
+            </form>
+          </dialog>
           <div class="viewer-badge" id="scale-badge">Preview in meters · export 10×</div>
         </section>
 

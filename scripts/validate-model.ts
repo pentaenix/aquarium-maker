@@ -14,7 +14,8 @@ class FakeCanvas {
 
 const THREE = await import('three');
 const { buildAquarium } = await import('../app/src/model/aquarium');
-const { cloneSettings, createPassage, DEFAULT_SETTINGS, normalizeSettings } = await import('../app/src/model/settings');
+const { buildDecorItem } = await import('../app/src/model/decor');
+const { cloneSettings, createDecorItem, createPassage, DEFAULT_SETTINGS, normalizeSettings } = await import('../app/src/model/settings');
 
 function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
   const build = buildAquarium(normalizeSettings(settings));
@@ -22,6 +23,7 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
   let meshes = 0;
   let invalid = 0;
   let degenerate = 0;
+  let openDecorEdges = 0;
   const names: string[] = [];
   const acrylicMaterials = new Set<string>();
   const a = new THREE.Vector3();
@@ -49,6 +51,12 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
 
     const indices = geometry.index;
     const triangleCount = indices ? Math.floor(indices.count / 3) : Math.floor(position.count / 3);
+    const edgeUse = new Map<string, number>();
+    const vertexKey = (vertex: number): string => `${Math.round(position.getX(vertex) * 1e6)},${Math.round(position.getY(vertex) * 1e6)},${Math.round(position.getZ(vertex) * 1e6)}`;
+    const addEdge = (from: number, to: number): void => {
+      const endpoints = [vertexKey(from), vertexKey(to)].sort(); const key = `${endpoints[0]}|${endpoints[1]}`;
+      edgeUse.set(key, (edgeUse.get(key) ?? 0) + 1);
+    };
     for (let triangle = 0; triangle < triangleCount; triangle += 1) {
       const ia = indices ? indices.getX(triangle * 3) : triangle * 3;
       const ib = indices ? indices.getX(triangle * 3 + 1) : triangle * 3 + 1;
@@ -64,22 +72,33 @@ function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
       ac.subVectors(c, a);
       cross.crossVectors(ab, ac);
       if (!Number.isFinite(cross.lengthSq()) || cross.lengthSq() < 1e-16) degenerate += 1;
+      if (object.name.startsWith('DECOR_')) { addEdge(ia, ib); addEdge(ib, ic); addEdge(ic, ia); }
     }
+    if (object.name.startsWith('DECOR_')) openDecorEdges += [...edgeUse.values()].filter((count) => count === 1).length;
   });
-  const navigation = build.group.userData.navigation as { schema?: string; schemaVersion?: number; regions?: unknown[]; portals?: unknown[]; swimVolumeLayers?: Array<{ yBottom?: number; yTop?: number; polygons?: unknown[] }>; dryPassages?: Array<{ crossSection?: unknown[]; centerline?: unknown[]; bendRadius?: number }> } | undefined;
+  const navigation = build.group.userData.navigation as { schema?: string; schemaVersion?: number; regions?: unknown[]; portals?: unknown[]; swimVolumeLayers?: Array<{ yBottom?: number; yTop?: number; polygons?: unknown[] }>; dryPassages?: Array<{ crossSection?: unknown[]; centerline?: unknown[]; bendRadius?: number }>; decorObstacles?: Array<{ id?: string; kind?: string; shape?: string; halfExtents?: number[]; rotation?: number; yBottom?: number; yTop?: number }> } | undefined;
   const navigationValid = navigation?.schema === 'aquarium-maker-navigation'
-    && navigation.schemaVersion === 3
+    && navigation.schemaVersion === 4
     && Array.isArray(navigation.regions)
     && Array.isArray(navigation.portals)
     && Array.isArray(navigation.swimVolumeLayers)
     && navigation.swimVolumeLayers.length >= 1
     && navigation.swimVolumeLayers.every((layer) => Number.isFinite(layer.yBottom) && Number.isFinite(layer.yTop) && Array.isArray(layer.polygons))
     && Array.isArray(navigation.dryPassages)
-    && navigation.dryPassages.every((passage) => Array.isArray(passage.crossSection) && Array.isArray(passage.centerline));
+    && navigation.dryPassages.every((passage) => Array.isArray(passage.crossSection) && Array.isArray(passage.centerline))
+    && Array.isArray(navigation.decorObstacles)
+    && navigation.decorObstacles.every((obstacle) => typeof obstacle.id === 'string' && obstacle.shape === 'orientedBox' && obstacle.halfExtents?.length === 2 && obstacle.halfExtents.every(Number.isFinite) && Number.isFinite(obstacle.rotation) && Number.isFinite(obstacle.yBottom) && Number.isFinite(obstacle.yTop));
   const acrylicMaterialConsistent = acrylicMaterials.size <= 1;
   const hardElbowValid = !label.includes('elbow') || navigation?.dryPassages?.every((passage) => passage.bendRadius === 0 && passage.centerline?.length === 3);
-  console.log(JSON.stringify({ label, meshes, triangles: build.triangles, vertices: build.vertices, invalid, degenerate, navigationValid, acrylicMaterialConsistent, regions: navigation?.regions?.length ?? 0, portals: navigation?.portals?.length ?? 0, size: box.getSize(new THREE.Vector3()).toArray(), names }, null, 2));
-  if (invalid || degenerate || !navigationValid || !acrylicMaterialConsistent || !hardElbowValid) process.exitCode = 1;
+  const obstacleCount = navigation?.decorObstacles?.length ?? 0;
+  const decorValid = label === 'decor-rocks-plants-navigation' || label === 'decor-below-passage-vertical-separation' ? obstacleCount === 1
+    : label === 'decor-dense-procedural-plants' ? obstacleCount === 0
+      : label.includes('all-decor-families') ? obstacleCount === 4 : true;
+  const rockKinds = new Set(['boulder', 'rockCluster', 'rockArch', 'rockShelf']);
+  const allDecorKindsValid = !label.includes('all-decor-families') || (navigation?.decorObstacles?.every((obstacle) => rockKinds.has(obstacle.kind ?? '')) && new Set(navigation?.decorObstacles?.map((obstacle) => obstacle.kind)).size === 4);
+  const decorClosed = !label.includes('decor') || openDecorEdges === 0;
+  console.log(JSON.stringify({ label, meshes, triangles: build.triangles, vertices: build.vertices, invalid, degenerate, openDecorEdges, navigationValid, decorValid, decorClosed, acrylicMaterialConsistent, regions: navigation?.regions?.length ?? 0, portals: navigation?.portals?.length ?? 0, decorObstacles: navigation?.decorObstacles?.length ?? 0, size: box.getSize(new THREE.Vector3()).toArray(), names }, null, 2));
+  if (invalid || degenerate || !navigationValid || !decorValid || !decorClosed || !allDecorKindsValid || !acrylicMaterialConsistent || !hardElbowValid) process.exitCode = 1;
   build.dispose();
 }
 
@@ -323,3 +342,61 @@ const eastWest = createPassage(crossed, 'tunnel', 'straight', 2);
 eastWest.entrySide = 'left'; eastWest.exitSide = 'right'; eastWest.entryOffset = 2.2; eastWest.width = 1.4;
 crossed.passages = [northSouth, eastWest];
 validate('two-directions-at-once', crossed);
+
+const decorated = cloneSettings(DEFAULT_SETTINGS);
+const arch = createDecorItem('rockArch', 1, -2.2, 0);
+arch.seed = 1101;
+arch.scaleX = arch.scaleY = arch.scaleZ = 0.72;
+const kelp = createDecorItem('kelp', 2, 2.25, 0);
+kelp.seed = 2201;
+kelp.scaleX = kelp.scaleY = kelp.scaleZ = 0.82;
+kelp.density = 9;
+const grass = createDecorItem('seagrass', 3, 0.2, 1.35);
+grass.seed = 3301;
+grass.scaleX = grass.scaleY = grass.scaleZ = 0.8;
+grass.density = 12;
+decorated.decor = [arch, kelp, grass];
+validate('decor-rocks-plants-navigation', decorated);
+
+const densePlants = cloneSettings(DEFAULT_SETTINGS);
+const denseKelp = createDecorItem('kelp', 1, -2.5, 0.4); denseKelp.density = 24; denseKelp.scaleX = denseKelp.scaleY = denseKelp.scaleZ = 0.75;
+const denseGrass = createDecorItem('seagrass', 2, 0, -1.25); denseGrass.density = 24; denseGrass.scaleX = denseGrass.scaleY = denseGrass.scaleZ = 0.72;
+const algaePatch = createDecorItem('algae', 3, 2.4, 0.7); algaePatch.density = 20; algaePatch.scaleX = algaePatch.scaleY = algaePatch.scaleZ = 0.85;
+denseKelp.seed = 4401; denseGrass.seed = 5501; algaePatch.seed = 6601;
+densePlants.decor = [denseKelp, denseGrass, algaePatch];
+validate('decor-dense-procedural-plants', densePlants);
+
+const allDecorFamilies = cloneSettings(DEFAULT_SETTINGS);
+allDecorFamilies.width = 22;
+allDecorFamilies.depth = 12;
+allDecorFamilies.height = 6;
+allDecorFamilies.decor = [
+  createDecorItem('boulder', 11, -7.5, -2.6),
+  createDecorItem('rockCluster', 12, -3.8, 2.5),
+  createDecorItem('rockArch', 13, 0, -2.3),
+  createDecorItem('rockShelf', 14, 4.1, 2.35),
+  createDecorItem('kelp', 15, 7.7, -2.4),
+  createDecorItem('seagrass', 16, -6.9, 2.5),
+  createDecorItem('algae', 17, 7.4, 2.6),
+];
+allDecorFamilies.decor.slice(0, 4).forEach((item, index) => { item.y = -0.22 - index * 0.09; });
+allDecorFamilies.decor.slice(0, 3).forEach((item) => { item.rockStyle = 'strata'; });
+allDecorFamilies.decor.forEach((item, index) => { item.seed = 9001 + index * 997; });
+Object.assign(allDecorFamilies.decor[0]!, { scaleX: 1.35, scaleY: 0.72, scaleZ: 0.58 });
+Object.assign(allDecorFamilies.decor[2]!, { scaleX: 1.18, scaleY: 0.84, scaleZ: 0.62 });
+validate('all-decor-families-detail', allDecorFamilies);
+
+const decorBelowPassage = cloneSettings(DEFAULT_SETTINGS);
+decorBelowPassage.profile = 'belowFloor'; decorBelowPassage.tunnelEnabled = true; decorBelowPassage.heightAboveFloor = 1.1; decorBelowPassage.depthBelowFloor = 3.4; decorBelowPassage.tunnelGlassFloor = true;
+const separatedArch = createDecorItem('rockArch', 1, 0, 0); separatedArch.autoPlace = false;
+decorBelowPassage.decor = [separatedArch];
+validate('decor-below-passage-vertical-separation', decorBelowPassage);
+
+for (const [index, kind] of (['boulder', 'rockCluster', 'rockArch', 'rockShelf', 'kelp', 'seagrass', 'algae'] as const).entries()) {
+  const item = createDecorItem(kind, index + 1); item.seed = 7001 + index * 997; item.y = 1.25;
+  const built = buildDecorItem(item, 2.3); const bounds = new THREE.Box3().setFromObject(built.group);
+  const grounded = Math.abs(bounds.min.y - 3.55) < 1e-5 && Math.abs(built.collision.yBottom - 3.55) < 1e-5;
+  console.log(JSON.stringify({ label: `decor-grounding-${kind}`, grounded, boundsBottom: bounds.min.y, collisionBottom: built.collision.yBottom }));
+  if (!grounded) process.exitCode = 1;
+  built.group.traverse((object) => { if (object instanceof THREE.Mesh) { object.geometry.dispose(); const materials = Array.isArray(object.material) ? object.material : [object.material]; materials.forEach((material) => material.dispose()); } });
+}

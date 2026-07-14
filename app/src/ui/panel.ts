@@ -4,6 +4,8 @@ import type {
   AquariumSettings,
   CornerMode,
   CornerRadii,
+  DecorItemSettings,
+  DecorKind,
   FootprintType,
   GroundPreset,
   PassageSettings,
@@ -14,6 +16,7 @@ import type {
 import {
   activeShapeCornerKeys,
   cloneSettings,
+  createDecorItem,
   createPassage,
   DEFAULT_SETTINGS,
   legacyPassage,
@@ -26,7 +29,7 @@ import {
 import { createFootprintShapeLoop } from '../model/aquarium';
 
 export type SelectedCorner = keyof CornerRadii | ShapeCornerKey;
-type PanelTab = 'layout' | 'height' | 'passages' | 'water' | 'ground';
+type PanelTab = 'layout' | 'height' | 'passages' | 'environment' | 'decor';
 type LayoutElement = 'bounds' | 'lVertical' | 'lHorizontal' | 'uLeft' | 'uRight' | 'uBridge';
 
 export interface PanelCallbacks {
@@ -35,6 +38,8 @@ export interface PanelCallbacks {
   onShare: () => void;
   onDownload: () => void;
   onView: (view: 'iso' | 'front' | 'side' | 'top' | 'fit') => void;
+  onDecorSelect: (id: string | null) => void;
+  onDecorModeChange: (active: boolean) => void;
 }
 
 interface RangeDefinition {
@@ -188,6 +193,8 @@ export class ControlPanel {
   private activeTab: PanelTab = 'layout';
   private selectedLayoutElement: LayoutElement = 'bounds';
   private selectedPassageId: string | null = null;
+  private selectedDecorId: string | null = null;
+  private invalidDecor = new Map<string, string>();
 
   constructor(root: HTMLElement, settings: AquariumSettings, callbacks: PanelCallbacks) {
     this.root = root;
@@ -198,6 +205,7 @@ export class ControlPanel {
       this.settings.tunnelEnabled = false;
     }
     this.selectedPassageId = this.settings.passages[0]?.id ?? null;
+    this.selectedDecorId = this.settings.decor[0]?.id ?? null;
     this.render();
     this.bind();
     this.refresh();
@@ -210,12 +218,29 @@ export class ControlPanel {
       this.settings.tunnelEnabled = false;
     }
     if (!this.settings.passages.some((passage) => passage.id === this.selectedPassageId)) this.selectedPassageId = this.settings.passages[0]?.id ?? null;
+    if (!this.settings.decor.some((item) => item.id === this.selectedDecorId)) this.selectedDecorId = this.settings.decor[0]?.id ?? null;
     this.ensureSelectedCorner();
     this.refresh();
   }
 
+  setDecorValidation(invalid: Array<{ id: string; reason: string }>): void {
+    this.invalidDecor = new Map(invalid.map((item) => [item.id, item.reason]));
+    this.refreshDecor();
+  }
+
+  selectDecor(id: string): void {
+    if (!this.settings.decor.some((item) => item.id === id)) return;
+    this.selectedDecorId = id; this.activeTab = 'decor'; this.refreshTabs(); this.refreshDecor(); this.callbacks.onDecorModeChange(true);
+  }
+
+  refreshSelectedDecorPosition(): void { this.refreshDecor(); }
+
   private selectedPassage(): PassageSettings | null {
     return this.settings.passages.find((passage) => passage.id === this.selectedPassageId) ?? null;
+  }
+
+  private selectedDecor(): DecorItemSettings | null {
+    return this.settings.decor.find((item) => item.id === this.selectedDecorId) ?? null;
   }
 
   private activeCornerKeys(): SelectedCorner[] {
@@ -248,8 +273,8 @@ export class ControlPanel {
       ['layout', 'Layout', 'M4 18V6h7v5h9v7H4Zm7-7v7'],
       ['height', 'Height', 'M6 20V6h12v14M6 12h12M10 6v14'],
       ['passages', 'Passages', 'M4 19V11a8 8 0 0 1 16 0v8M8 19v-8a4 4 0 0 1 8 0v8'],
-      ['water', 'Water', 'M3 15c3-3 6 3 9 0s6 3 9 0M4 9c3-3 5 2 8 0s5 3 8 0'],
-      ['ground', 'Ground', 'M4 17c4-2 8-2 16 0M5 13c5-2 9-2 14 0M7 9h10'],
+      ['environment', 'Habitat', 'M3 15c3-3 6 3 9 0s6 3 9 0M4 9c3-3 5 2 8 0s5 3 8 0'],
+      ['decor', 'Decor', 'M5 19c3-8 4-13 7-13s4 5 7 13M8 14c2 0 4-1 6-3M10 18c1-3 3-5 5-6'],
     ];
     this.root.innerHTML = `
       <nav class="panel-tabs" aria-label="Aquarium editor sections">${tabs.map(([id, label, icon]) => `<button type="button" data-tab="${id}" class="${id === this.activeTab ? 'is-active' : ''}"><svg viewBox="0 0 24 24"><path d="${icon}" /></svg><span>${label}</span></button>`).join('')}</nav>
@@ -311,21 +336,26 @@ export class ControlPanel {
           </div>
         </section>
 
-        <section class="tab-pane" data-tab-panel="water" hidden>
+        <section class="tab-pane" data-tab-panel="environment" hidden>
           ${card('Water surface', 'Visual presets remain editable after selection', `<div class="water-style-presets"><button type="button" data-water-preset="calm"><span class="water-swatch water-calm"></span><strong>Calm</strong><small>Broad and quiet</small></button><button type="button" data-water-preset="realistic"><span class="water-swatch water-realistic"></span><strong>Realistic</strong><small>Fine ripples</small></button><button type="button" data-water-preset="balanced"><span class="water-swatch water-balanced"></span><strong>Balanced</strong><small>Readable game water</small></button><button type="button" data-water-preset="cartoon"><span class="water-swatch water-cartoon"></span><strong>Cartoon</strong><small>Graphic highlights</small></button><button type="button" data-water-preset="pixel"><span class="water-swatch water-pixel"></span><strong>Pixel</strong><small>Stepped block waves</small></button></div>${colorMarkup('waterColor', 'Water color')}${rangeMarkup('waterTint')}${rangeMarkup('waterSurfaceStyle')}${rangeMarkup('waveStrength')}${rangeMarkup('waterWaveScale')}`)}
           ${card('Cheap animation', 'Two scrolling texture layers and subtle surface motion; no fluid simulation', `<div class="toggle-row"><div><strong>Animate surface</strong><span>Viewport preview and export metadata</span></div><button class="switch" id="water-animation" type="button" role="switch"><span></span></button></div>${rangeMarkup('waterAnimationSpeed')}${rangeMarkup('waterAnimationAmount')}`)}
           ${card('Water placement', 'Touch-pool depth is controlled in Height', `<div id="standard-water-level">${rangeMarkup('waterLevel')}</div>`)}
-        </section>
-
-        <section class="tab-pane" data-tab-panel="ground" hidden>
           ${card('Ground material', 'Choose a substrate, then tune its procedural texture', `<div class="ground-presets"><button type="button" data-ground-preset="sand"><strong>Sand</strong><small>Warm and soft</small></button><button type="button" data-ground-preset="dirt"><strong>Dirt</strong><small>Dark organic soil</small></button><button type="button" data-ground-preset="algae"><strong>Algae</strong><small>Muted green growth</small></button><button type="button" data-ground-preset="gravel"><strong>Gravel</strong><small>Coarse mixed stones</small></button></div>${colorMarkup('sandColor', 'Ground color')}${rangeMarkup('sandVariation')}${rangeMarkup('sandGrain')}`)}
           ${card('Floor shape', 'Actual mesh deformation produces low hills, banks, and irregular forms', `${rangeMarkup('groundIrregularity')}${rangeMarkup('groundMoundHeight')}${rangeMarkup('groundMoundSize')}${rangeMarkup('groundMoundCount')}${rangeMarkup('groundWallFalloff')}${rangeMarkup('groundTerrainDetail')}<div class="action-row"><button class="button button-quiet" id="randomize-ground" type="button">New terrain seed</button></div>`)}
         </section>
+
+        <section class="tab-pane" data-tab-panel="decor" hidden>
+          ${card('Add decor', 'Procedural items are deterministic; fish avoid rocks but can swim through plants', `<div class="decor-add-grid"><button type="button" data-add-decor="boulder"><strong>Boulder</strong><small>Volcanic stone</small></button><button type="button" data-add-decor="rockCluster"><strong>Cluster</strong><small>Grouped basalt</small></button><button type="button" data-add-decor="rockArch"><strong>Arch</strong><small>Swim-around feature</small></button><button type="button" data-add-decor="rockShelf"><strong>Shelf</strong><small>Layered ledge</small></button><button type="button" data-add-decor="kelp"><strong>Kelp</strong><small>Tall swaying grove</small></button><button type="button" data-add-decor="seagrass"><strong>Seagrass</strong><small>Fine blade patch</small></button><button type="button" data-add-decor="algae"><strong>Algae</strong><small>Low soft growth</small></button></div><div class="decor-list" id="decor-list"></div><div class="empty-decor-state" id="empty-decor-state"><strong>No decor placed</strong><span>Add rocks or plants above, then position each item inside the tank.</span></div>`)}
+          <div id="decor-editor-wrap">
+            ${card('Selected decor', 'Move, rotate, reshape, reseed, duplicate, or delete this item', `<div class="decor-title-row"><input id="decor-name" type="text" maxlength="48"><div><button type="button" id="duplicate-decor">Duplicate</button><button type="button" id="delete-decor" class="danger-button">Delete</button></div></div><div class="decor-kind-label" id="decor-kind-label"></div><label class="decor-rock-style" id="decor-rock-style-wrap">Rock formation<select id="decor-rock-style"><option value="eroded">Eroded monolith</option><option value="strata">Layered shelf stones</option></select></label><div class="decor-position-grid"><label>X position<input id="decor-x" type="number" step="0.05"></label><label>Y from floor<input id="decor-y" type="number" step="0.05"></label><label>Z position<input id="decor-z" type="number" step="0.05"></label><label>Rotation<input id="decor-rotation" type="number" step="1"><span>°</span></label><label>Width<input id="decor-scale-x" type="number" min="0.2" max="4" step="0.05"><span>×</span></label><label>Height<input id="decor-scale-y" type="number" min="0.2" max="4" step="0.05"><span>×</span></label><label>Depth / girth<input id="decor-scale-z" type="number" min="0.2" max="4" step="0.05"><span>×</span></label><label>Density<input id="decor-density" type="number" min="1" max="24" step="1"></label></div><div class="decor-validation" id="decor-validation"></div><div class="action-row"><button class="button button-quiet" id="reseed-decor" type="button">New procedural seed</button></div>`)}
+          </div>
+        </section>
+
       </div>`;
   }
 
   private bind(): void {
-    this.root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((button) => button.addEventListener('click', () => { this.activeTab = button.dataset.tab as PanelTab; this.refreshTabs(); }));
+    this.root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((button) => button.addEventListener('click', () => { this.activeTab = button.dataset.tab as PanelTab; this.refreshTabs(); this.callbacks.onDecorModeChange(this.activeTab === 'decor'); }));
     this.root.querySelectorAll<HTMLButtonElement>('[data-footprint]').forEach((button) => button.addEventListener('click', () => {
       this.settings.footprint = button.dataset.footprint as FootprintType;
       this.selectedLayoutElement = this.settings.footprint === 'lShape' ? 'lVertical' : this.settings.footprint === 'uShape' ? 'uLeft' : 'bounds';
@@ -418,6 +448,29 @@ export class ControlPanel {
       else Object.assign(this.settings, { waterSurfaceStyle: 0.96, waveStrength: 0.72, waterWaveScale: 0.58 });
       this.refresh(); this.callbacks.onChange(this.settings, false);
     }));
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-add-decor]').forEach((button) => button.addEventListener('click', () => {
+      const loop = createFootprintShapeLoop(this.settings, -(this.settings.glassThickness + this.settings.waterWallGap + 0.35));
+      const box = new THREE.Box2().setFromPoints(loop);
+      const center = box.getCenter(new THREE.Vector2());
+      const size = box.getSize(new THREE.Vector2());
+      const candidateOffsets = [[0.28, 0.24], [-0.28, 0.24], [0.28, -0.24], [-0.28, -0.24], [0, 0]];
+      const offset = candidateOffsets[this.settings.decor.length % candidateOffsets.length]!;
+      const item = createDecorItem(button.dataset.addDecor as DecorKind, this.settings.decor.length + 1, center.x + size.x * offset[0]!, center.y + size.y * offset[1]!);
+      this.settings.decor.push(item); this.selectedDecorId = item.id; this.activeTab = 'decor'; normalizeSettings(this.settings); this.refresh(); this.callbacks.onDecorModeChange(true); this.callbacks.onDecorSelect(item.id); this.callbacks.onChange(this.settings, true);
+    }));
+    this.root.querySelector<HTMLElement>('#decor-list')!.addEventListener('click', (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-decor-id]');
+      if (!button) return; this.selectedDecorId = button.dataset.decorId ?? null; this.refreshDecor(); this.callbacks.onDecorSelect(this.selectedDecorId);
+    });
+    this.root.querySelector<HTMLInputElement>('#decor-name')!.addEventListener('change', (event) => { const item = this.selectedDecor(); if (!item) return; item.name = (event.target as HTMLInputElement).value.trim() || item.name; this.refreshDecor(); this.callbacks.onChange(this.settings, false); });
+    for (const [id, key] of [['decor-x', 'x'], ['decor-y', 'y'], ['decor-z', 'z'], ['decor-rotation', 'rotation'], ['decor-scale-x', 'scaleX'], ['decor-scale-y', 'scaleY'], ['decor-scale-z', 'scaleZ'], ['decor-density', 'density']] as Array<[string, keyof DecorItemSettings]>) {
+      this.root.querySelector<HTMLInputElement>(`#${id}`)!.addEventListener('change', (event) => this.applyDecorNumeric(key, (event.target as HTMLInputElement).value));
+    }
+    this.root.querySelector<HTMLSelectElement>('#decor-rock-style')!.addEventListener('change', (event) => { const item = this.selectedDecor(); if (!item) return; item.rockStyle = (event.target as HTMLSelectElement).value === 'strata' ? 'strata' : 'eroded'; this.callbacks.onChange(this.settings, true); });
+    this.root.querySelector<HTMLButtonElement>('#reseed-decor')!.addEventListener('click', () => { const item = this.selectedDecor(); if (!item) return; item.seed = Math.floor(Math.random() * 1_000_000_000) + 1; this.callbacks.onChange(this.settings, true); });
+    this.root.querySelector<HTMLButtonElement>('#delete-decor')!.addEventListener('click', () => { const index = this.settings.decor.findIndex((item) => item.id === this.selectedDecorId); if (index < 0) return; this.settings.decor.splice(index, 1); this.selectedDecorId = this.settings.decor[Math.min(index, this.settings.decor.length - 1)]?.id ?? null; this.refresh(); this.callbacks.onDecorSelect(this.selectedDecorId); this.callbacks.onChange(this.settings, true); });
+    this.root.querySelector<HTMLButtonElement>('#duplicate-decor')!.addEventListener('click', () => { const source = this.selectedDecor(); if (!source) return; const clone = { ...source, id: `decor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, name: `${source.name} copy`, x: source.x + 0.35, z: source.z + 0.25, seed: source.seed + 104729, autoPlace: true }; this.settings.decor.push(clone); this.selectedDecorId = clone.id; normalizeSettings(this.settings); this.refresh(); this.callbacks.onDecorSelect(clone.id); this.callbacks.onChange(this.settings, true); });
 
     document.querySelector<HTMLInputElement>('#export-scale-number')!.addEventListener('change', (event) => { const value = Number.parseFloat((event.target as HTMLInputElement).value); if (Number.isFinite(value) && value > 0) this.settings.exportScale = value; normalizeSettings(this.settings); this.refresh(); this.callbacks.onChange(this.settings, false); });
     document.querySelector<HTMLButtonElement>('#reset-button')!.addEventListener('click', () => { const defaults = cloneSettings(DEFAULT_SETTINGS); this.settings = defaults; this.selectedPassageId = null; this.callbacks.onReset(defaults); this.ensureSelectedCorner(); this.refresh(); });
@@ -559,6 +612,14 @@ export class ControlPanel {
     normalizeSettings(this.settings); this.refreshPassageEditor(); this.refreshLayoutPreview(); this.callbacks.onChange(this.settings, true);
   }
 
+  private applyDecorNumeric(key: keyof DecorItemSettings, raw: string): void {
+    const item = this.selectedDecor(); if (!item) return;
+    const value = Number.parseFloat(raw); if (!Number.isFinite(value)) return;
+    (item as unknown as Record<string, unknown>)[key] = value;
+    if (key === 'x' || key === 'y' || key === 'z') item.autoPlace = false;
+    normalizeSettings(this.settings); this.refreshDecor(); this.callbacks.onChange(this.settings, true);
+  }
+
   private setPassageSide(key: 'entrySide' | 'exitSide', side: PassageSide): void {
     const passage = this.selectedPassage(); if (!passage) return;
     if (key === 'entrySide') {
@@ -586,6 +647,7 @@ export class ControlPanel {
     this.refreshLayoutPreview();
     this.refreshCornerEditor();
     this.refreshPassages();
+    this.refreshDecor();
     this.refreshColors();
     const nav = this.root.querySelector<HTMLButtonElement>('#navigation-json')!; nav.classList.toggle('is-on', this.settings.exportNavigationJson); nav.setAttribute('aria-checked', String(this.settings.exportNavigationJson));
     const waterAnimation = this.root.querySelector<HTMLButtonElement>('#water-animation')!; waterAnimation.classList.toggle('is-on', this.settings.waterAnimationEnabled); waterAnimation.setAttribute('aria-checked', String(this.settings.waterAnimationEnabled));
@@ -620,6 +682,35 @@ export class ControlPanel {
     this.root.querySelector<HTMLElement>('#touch-height-section')!.hidden = this.settings.profile !== 'touchPool';
     this.root.querySelector<HTMLElement>('#standard-water-level')!.hidden = this.settings.profile === 'touchPool';
     this.root.querySelector<HTMLElement>('#profile-note')!.textContent = this.settings.profile === 'touchPool' ? 'Touch pools use opaque basin walls and disable passages.' : this.settings.profile === 'belowFloor' ? 'The opaque body continues below Y = 0. Bridge passages preserve water underneath.' : 'Standard display profile with clear acrylic walls.';
+  }
+
+  private refreshDecor(): void {
+    const labels: Record<DecorKind, string> = { boulder: 'Volcanic boulder', rockCluster: 'Basalt cluster', rockArch: 'Rock arch', rockShelf: 'Rock shelf', kelp: 'Kelp grove', seagrass: 'Seagrass patch', algae: 'Algae cluster' };
+    const list = this.root.querySelector<HTMLElement>('#decor-list')!;
+    list.innerHTML = this.settings.decor.map((item, index) => `<button type="button" data-decor-id="${item.id}" class="${item.id === this.selectedDecorId ? 'is-active' : ''}"><span class="decor-index">${String(index + 1).padStart(2, '0')}</span><span><strong>${item.name}</strong><small>${labels[item.kind]}</small></span></button>`).join('');
+    this.root.querySelector<HTMLElement>('#empty-decor-state')!.hidden = this.settings.decor.length > 0;
+    const item = this.selectedDecor();
+    const editor = this.root.querySelector<HTMLElement>('#decor-editor-wrap')!; editor.hidden = !item;
+    if (!item) return;
+    this.root.querySelector<HTMLInputElement>('#decor-name')!.value = item.name;
+    this.root.querySelector<HTMLElement>('#decor-kind-label')!.textContent = `${labels[item.kind]} · seed ${item.seed}`;
+    const styleWrap = this.root.querySelector<HTMLElement>('#decor-rock-style-wrap')!; const styleRock = item.kind === 'boulder' || item.kind === 'rockCluster' || item.kind === 'rockArch'; styleWrap.hidden = !styleRock;
+    this.root.querySelector<HTMLSelectElement>('#decor-rock-style')!.value = item.rockStyle;
+    this.root.querySelector<HTMLInputElement>('#decor-x')!.value = String(Number(item.x.toFixed(3)));
+    this.root.querySelector<HTMLInputElement>('#decor-y')!.value = String(Number(item.y.toFixed(3)));
+    this.root.querySelector<HTMLInputElement>('#decor-z')!.value = String(Number(item.z.toFixed(3)));
+    this.root.querySelector<HTMLInputElement>('#decor-rotation')!.value = String(Number(item.rotation.toFixed(1)));
+    this.root.querySelector<HTMLInputElement>('#decor-scale-x')!.value = String(Number(item.scaleX.toFixed(2)));
+    this.root.querySelector<HTMLInputElement>('#decor-scale-y')!.value = String(Number(item.scaleY.toFixed(2)));
+    this.root.querySelector<HTMLInputElement>('#decor-scale-z')!.value = String(Number(item.scaleZ.toFixed(2)));
+    this.root.querySelector<HTMLInputElement>('#decor-density')!.value = String(item.density);
+    const loop = createFootprintShapeLoop(this.settings, -(this.settings.glassThickness + this.settings.waterWallGap));
+    const inside = (() => { let result = false; for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) { const a = loop[i]!; const b = loop[j]!; if ((a.y > item.z) !== (b.y > item.z) && item.x < (b.x - a.x) * (item.z - a.y) / Math.max(1e-9, b.y - a.y) + a.x) result = !result; } return result; })();
+    const validation = this.root.querySelector<HTMLElement>('#decor-validation')!;
+    const modelReason = this.invalidDecor.get(item.id);
+    const isRock = item.kind === 'boulder' || item.kind === 'rockCluster' || item.kind === 'rockArch' || item.kind === 'rockShelf';
+    validation.classList.toggle('is-invalid', !inside || Boolean(modelReason));
+    validation.textContent = !inside ? 'Move this item inside the water footprint.' : modelReason ? `Invalid placement: ${modelReason}. The red wireframe is preview-only and will not export.` : isRock ? 'Valid placement. Fish and exported navigation avoid this rock.' : 'Valid placement. Fish can swim naturally through this plant.';
   }
 
   private refreshLayoutInspector(): void {

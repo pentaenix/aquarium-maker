@@ -171,13 +171,16 @@ scene.add(ground);
 
 let currentBuild: AquariumBuild | null = null;
 let modelGroup: THREE.Group | null = null;
+let selectedDecorId: string | null = null;
+let decorHighlight: THREE.BoxHelper | null = null;
+let decorModeActive = false;
 const navOverlayGroup = new THREE.Group();
 navOverlayGroup.name = 'VIEWPORT_NAV_OVERLAY';
 scene.add(navOverlayGroup);
 const simulationGroup = new THREE.Group();
 simulationGroup.name = 'VIEWPORT_ANIMAL_SIMULATION';
 scene.add(simulationGroup);
-type SimAgent = { position: THREE.Vector3; velocity: THREE.Vector3; homeY: number; phase: number; stuckFrames: number };
+type SimAgent = { position: THREE.Vector3; velocity: THREE.Vector3; homeY: number; phase: number; stuckFrames: number; lastSafe: THREE.Vector3 };
 let simAgents: SimAgent[] = [];
 let simMesh: THREE.InstancedMesh | null = null;
 let simulationBounds: THREE.Box3 | null = null;
@@ -185,6 +188,8 @@ let simulationBoundary: number[][] = [];
 let simulationYRange: [number, number] = [0, 1];
 type DryPassage = { floorY: number; crownY: number; waterClearance: number; crossSection: number[][]; centerline: number[][] };
 let simulationDryPassages: DryPassage[] = [];
+type DecorObstacle = { id: string; center: [number, number, number]; halfExtents: [number, number]; rotation: number; yBottom: number; yTop: number };
+let simulationDecorObstacles: DecorObstacle[] = [];
 const dummyObject = new THREE.Object3D();
 
 function pointInBoundary(x: number, z: number): boolean {
@@ -208,6 +213,19 @@ function closestPointOnSegment(x: number, z: number, ax: number, az: number, bx:
   return new THREE.Vector2(ax + dx * t, az + dz * t);
 }
 
+function orientedObstacleInfo(x: number, z: number, obstacle: DecorObstacle): { distance: number; away: THREE.Vector3 } {
+  const dx = x - obstacle.center[0]; const dz = z - obstacle.center[2]; const cos = Math.cos(obstacle.rotation); const sin = Math.sin(obstacle.rotation);
+  const localX = cos * dx - sin * dz; const localZ = sin * dx + cos * dz; const [halfX, halfZ] = obstacle.halfExtents;
+  const qx = Math.abs(localX) - halfX; const qz = Math.abs(localZ) - halfZ;
+  const distance = Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0);
+  let awayX: number; let awayZ: number;
+  if (qx > 0 || qz > 0) { awayX = localX - THREE.MathUtils.clamp(localX, -halfX, halfX); awayZ = localZ - THREE.MathUtils.clamp(localZ, -halfZ, halfZ); }
+  else if (qx > qz) { awayX = Math.sign(localX) || 1; awayZ = 0; }
+  else { awayX = 0; awayZ = Math.sign(localZ) || 1; }
+  const away = new THREE.Vector3(cos * awayX + sin * awayZ, 0, -sin * awayX + cos * awayZ); if (away.lengthSq() > 1e-9) away.normalize();
+  return { distance, away };
+}
+
 function dryHalfWidth(passage: DryPassage, y: number): number {
   if (y < passage.floorY || y > passage.crownY + passage.waterClearance) return 0;
   const hits: number[] = [];
@@ -226,7 +244,7 @@ function isSwimmable(position: THREE.Vector3, radius: number): boolean {
   for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
     if (!pointInBoundary(position.x + Math.cos(angle) * radius, position.z + Math.sin(angle) * radius)) return false;
   }
-  return !simulationDryPassages.some((passage) => {
+  const blockedByPassage = simulationDryPassages.some((passage) => {
     const width = dryHalfWidth(passage, position.y);
     if (!width) return false;
     for (let index = 0; index < passage.centerline.length - 1; index += 1) {
@@ -234,6 +252,10 @@ function isSwimmable(position: THREE.Vector3, radius: number): boolean {
     }
     return false;
   });
+  if (blockedByPassage) return false;
+  return !simulationDecorObstacles.some((obstacle) => position.y + radius > obstacle.yBottom
+    && position.y - radius < obstacle.yTop
+    && orientedObstacleInfo(position.x, position.z, obstacle).distance < radius);
 }
 
 function navigationAvoidance(position: THREE.Vector3, velocity: THREE.Vector3, radius: number): THREE.Vector3 {
@@ -271,6 +293,13 @@ function navigationAvoidance(position: THREE.Vector3, velocity: THREE.Vector3, r
       }
     }
   }
+  for (const obstacle of simulationDecorObstacles) {
+    if (ahead.y + radius <= obstacle.yBottom || ahead.y - radius >= obstacle.yTop) continue;
+    const obstacleInfo = orientedObstacleInfo(ahead.x, ahead.z, obstacle); const away = obstacleInfo.away; const clearance = obstacleInfo.distance - radius;
+    if (clearance >= range) continue;
+    if (away.lengthSq() < 1e-8) away.set(-velocity.z, 0, velocity.x).normalize();
+    force.add(away.normalize().multiplyScalar((1 - Math.max(0, clearance) / range) * 4.2));
+  }
   return force;
 }
 
@@ -284,10 +313,30 @@ const SIM_TEMPLATES = {
   bottom: { count: 18, size: 0.205, speed: 0.22, turn: 1.1, surface: 0.08 },
 } as const;
 
+function simulationTemplate() {
+  const base = SIM_TEMPLATES[settings.fishSimulationPreset];
+  return { ...base, count: settings.fishSimulationCount, size: base.size * settings.fishSimulationSize };
+}
+
+function findSafeSpawn(radius: number, preferredY: number): THREE.Vector3 | null {
+  if (!simulationBounds) return null;
+  const bounds = simulationBounds;
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    const candidate = new THREE.Vector3(
+      THREE.MathUtils.lerp(bounds.min.x, bounds.max.x, Math.random()),
+      THREE.MathUtils.lerp(simulationYRange[0] + radius, simulationYRange[1] - radius, attempt < 80 ? THREE.MathUtils.clamp(preferredY, 0.04, 0.96) : Math.random()),
+      THREE.MathUtils.lerp(bounds.min.z, bounds.max.z, Math.random()),
+    );
+    if (isSwimmable(candidate, radius)) return candidate;
+  }
+  return null;
+}
+
 function clearPreviewHelpers(): void {
   navOverlayGroup.clear();
   if (simMesh) { simMesh.geometry.dispose(); (simMesh.material as THREE.Material).dispose(); }
   simulationGroup.clear(); simMesh = null; simAgents = [];
+  simulationDecorObstacles = [];
 }
 
 function rebuildNavOverlay(): void {
@@ -319,9 +368,10 @@ function rebuildSimulation(): void {
   const range = navigation.waterHeightRangeMeters as number[];
   simulationYRange = [range?.[0] ?? 0, range?.[1] ?? 1];
   simulationDryPassages = Array.isArray(navigation.dryPassages) ? navigation.dryPassages as DryPassage[] : [];
+  simulationDecorObstacles = Array.isArray(navigation.decorObstacles) ? navigation.decorObstacles as DecorObstacle[] : [];
   const bounds = navigation.boundsMeters as { min:number[]; max:number[] };
   simulationBounds = new THREE.Box3(new THREE.Vector3(bounds.min[0], bounds.min[1], bounds.min[2]), new THREE.Vector3(bounds.max[0], bounds.max[1], bounds.max[2]));
-  const template = SIM_TEMPLATES[settings.fishSimulationPreset];
+  const template = simulationTemplate();
   const geometry = settings.fishSimulationPreset === 'ray' ? new THREE.SphereGeometry(1, 8, 5) : new THREE.ConeGeometry(0.32, 1, 6);
   geometry.rotateZ(-Math.PI / 2); geometry.scale(template.size * 0.68, template.size * 0.44, template.size * 0.44);
   const material = new THREE.MeshStandardMaterial({ color: settings.fishSimulationPreset === 'school' ? 0x4d83aa : 0x65747a, roughness: 0.6, metalness: 0 });
@@ -337,11 +387,11 @@ function rebuildSimulation(): void {
       tries++;
     } while(!isSwimmable(new THREE.Vector3(x, y, z), template.size) && tries<120);
     const position = new THREE.Vector3(x, y, z);
-    if (!isSwimmable(position, template.size)) position.set(center.x, THREE.MathUtils.lerp(simulationYRange[0], simulationYRange[1], template.surface), center.z);
+    if (!isSwimmable(position, template.size)) position.copy(findSafeSpawn(template.size, template.surface) ?? center);
     const velocity = settings.fishSimulationPreset === 'school'
       ? schoolHeading.clone().add(new THREE.Vector3(THREE.MathUtils.randFloatSpread(0.22), THREE.MathUtils.randFloatSpread(0.08), THREE.MathUtils.randFloatSpread(0.22))).normalize().multiplyScalar(template.speed)
       : new THREE.Vector3(THREE.MathUtils.randFloatSpread(1),THREE.MathUtils.randFloatSpread(.25),THREE.MathUtils.randFloatSpread(1)).normalize().multiplyScalar(template.speed);
-    simAgents.push({ position, velocity, homeY: position.y, phase: Math.random()*Math.PI*2, stuckFrames: 0 });
+    simAgents.push({ position, velocity, homeY: position.y, phase: Math.random()*Math.PI*2, stuckFrames: 0, lastSafe: position.clone() });
   }
 }
 
@@ -351,6 +401,22 @@ let panel: ControlPanel | null = null;
 let rebuildTimer = 0;
 let firstBuild = true;
 let cameraAnimationToken = 0;
+
+function findDecorGroup(id: string | null): THREE.Group | null {
+  if (!id || !modelGroup) return null;
+  let found: THREE.Group | null = null;
+  modelGroup.traverse((object) => { if (!found && object instanceof THREE.Group && object.userData.decorId === id) found = object; });
+  return found;
+}
+
+function updateDecorHighlight(): void {
+  if (decorHighlight) { scene.remove(decorHighlight); decorHighlight.geometry.dispose(); (decorHighlight.material as THREE.Material).dispose(); decorHighlight = null; }
+  if (!decorModeActive) return;
+  const target = findDecorGroup(selectedDecorId); if (!target) return;
+  decorHighlight = new THREE.BoxHelper(target, 0x19e6b1);
+  const material = decorHighlight.material as THREE.LineBasicMaterial; material.transparent = true; material.opacity = 0.95; material.depthTest = false;
+  decorHighlight.renderOrder = 80; scene.add(decorHighlight);
+}
 
 function updateStats(): void {
   const visibleHeight = settings.profile === 'belowFloor'
@@ -373,13 +439,16 @@ function rebuildNow(autoFrame = false): void {
   try {
     const nextBuild = buildAquarium(settings);
     if (currentBuild) {
+      if (decorHighlight) { scene.remove(decorHighlight); decorHighlight.geometry.dispose(); (decorHighlight.material as THREE.Material).dispose(); decorHighlight = null; }
       scene.remove(currentBuild.group);
       currentBuild.dispose();
     }
     currentBuild = nextBuild;
     modelGroup = nextBuild.group;
     scene.add(nextBuild.group);
+    updateDecorHighlight();
     refreshPreviewHelpers();
+    panel?.setDecorValidation((nextBuild.group.userData.decor?.invalid ?? []) as Array<{ id: string; reason: string }>);
     lastValidSettings = cloneSettings(settings);
     updateStats();
     saveSettings();
@@ -555,7 +624,43 @@ panel = new ControlPanel(controlRoot, settings, {
   onShare: () => void shareSettings(),
   onDownload: () => void downloadModel(),
   onView: setCameraView,
+  onDecorSelect: (id) => { selectedDecorId = id; updateDecorHighlight(); },
+  onDecorModeChange: (active) => { decorModeActive = active; canvas.classList.toggle('is-decor-mode', active); if (!active) canvas.classList.remove('is-decor-hover'); updateDecorHighlight(); },
 });
+
+const decorRaycaster = new THREE.Raycaster(); const decorPointer = new THREE.Vector2();
+type DecorDrag = { pointerId: number; id: string; group: THREE.Group; plane: THREE.Plane; offsetX: number; offsetZ: number };
+let decorDrag: DecorDrag | null = null;
+function setDecorRay(event: PointerEvent): void {
+  const rect = canvas.getBoundingClientRect(); decorPointer.set((event.clientX - rect.left) / Math.max(1, rect.width) * 2 - 1, -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1); decorRaycaster.setFromCamera(decorPointer, camera);
+}
+function pickDecor(event: PointerEvent): { id: string; group: THREE.Group } | null {
+  if (!decorModeActive || !modelGroup) return null; setDecorRay(event); const meshes: THREE.Mesh[] = [];
+  modelGroup.traverse((object) => { if (object instanceof THREE.Mesh && typeof object.userData.decorId === 'string') meshes.push(object); });
+  const hit = decorRaycaster.intersectObjects(meshes, false)[0]; const id = hit?.object.userData.decorId as string | undefined; const group = findDecorGroup(id ?? null); return id && group ? { id, group } : null;
+}
+canvas.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return; const picked = pickDecor(event); if (!picked) return;
+  event.preventDefault(); event.stopImmediatePropagation(); selectedDecorId = picked.id; panel?.selectDecor(picked.id); updateDecorHighlight();
+  const bottom = new THREE.Box3().setFromObject(picked.group).min.y; const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -bottom); const intersection = new THREE.Vector3();
+  if (!decorRaycaster.ray.intersectPlane(plane, intersection)) return;
+  decorDrag = { pointerId: event.pointerId, id: picked.id, group: picked.group, plane, offsetX: picked.group.position.x - intersection.x, offsetZ: picked.group.position.z - intersection.z };
+  controls && (controls.enabled = false); canvas.setPointerCapture(event.pointerId); canvas.classList.add('is-decor-dragging');
+}, { capture: true });
+canvas.addEventListener('pointermove', (event) => {
+  if (!decorDrag || event.pointerId !== decorDrag.pointerId) { canvas.classList.toggle('is-decor-hover', decorModeActive && Boolean(pickDecor(event))); return; }
+  event.preventDefault(); event.stopImmediatePropagation(); setDecorRay(event); const intersection = new THREE.Vector3(); if (!decorRaycaster.ray.intersectPlane(decorDrag.plane, intersection)) return;
+  const item = settings.decor.find((candidate) => candidate.id === decorDrag!.id); if (!item) return;
+  item.x = intersection.x + decorDrag.offsetX; item.z = intersection.z + decorDrag.offsetZ; item.autoPlace = false;
+  decorDrag.group.position.x = item.x; decorDrag.group.position.z = item.z; decorDrag.group.updateMatrixWorld(true); decorHighlight?.update(); panel?.refreshSelectedDecorPosition();
+}, { capture: true });
+const finishDecorDrag = (event: PointerEvent): void => {
+  if (!decorDrag || event.pointerId !== decorDrag.pointerId) return; event.preventDefault(); event.stopImmediatePropagation();
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId); decorDrag = null; canvas.classList.remove('is-decor-dragging'); if (controls) controls.enabled = true;
+  settings = normalizeSettings(settings); rebuildNow(false);
+};
+canvas.addEventListener('pointerup', finishDecorDrag, { capture: true });
+canvas.addEventListener('pointercancel', finishDecorDrag, { capture: true });
 
 function resize(): void {
   if (!renderer) return;
@@ -580,10 +685,23 @@ controls?.addEventListener('start', () => {
 const navButton = requireElement<HTMLButtonElement>('#toggle-nav-overlay');
 const fishButton = requireElement<HTMLButtonElement>('#toggle-fish-simulation');
 const fishPreset = requireElement<HTMLSelectElement>('#fish-preset');
+const fishSettingsDialog = requireElement<HTMLDialogElement>('#fish-settings-dialog');
+const fishSettingsButton = requireElement<HTMLButtonElement>('#open-fish-settings');
+const fishCount = requireElement<HTMLInputElement>('#fish-count');
+const fishSize = requireElement<HTMLInputElement>('#fish-size');
+const fishSizeOutput = requireElement<HTMLOutputElement>('#fish-size-output');
+const fishBehavior = requireElement<HTMLSelectElement>('#fish-behavior');
+const fishSettingsCancel = requireElement<HTMLButtonElement>('#fish-settings-cancel');
+const fishSettingsApply = requireElement<HTMLButtonElement>('#fish-settings-apply');
 navButton.addEventListener('click', () => { settings.navOverlayEnabled = !settings.navOverlayEnabled; navButton.classList.toggle('is-active', settings.navOverlayEnabled); rebuildNavOverlay(); saveSettings(); });
 fishButton.addEventListener('click', () => { settings.fishSimulationEnabled = !settings.fishSimulationEnabled; fishButton.classList.toggle('is-active', settings.fishSimulationEnabled); rebuildSimulation(); saveSettings(); });
 fishPreset.value = settings.fishSimulationPreset;
 fishPreset.addEventListener('change', () => { settings.fishSimulationPreset = fishPreset.value as AquariumSettings['fishSimulationPreset']; rebuildSimulation(); saveSettings(); });
+function refreshFishDialog(): void { fishPreset.value = settings.fishSimulationPreset; fishCount.value = String(settings.fishSimulationCount); fishSize.value = String(settings.fishSimulationSize); fishSizeOutput.value = `${settings.fishSimulationSize.toFixed(2)}×`; fishSizeOutput.textContent = fishSizeOutput.value; fishBehavior.value = settings.fishSimulationBehavior; }
+fishSettingsButton.addEventListener('click', () => { refreshFishDialog(); fishSettingsDialog.showModal(); });
+fishSize.addEventListener('input', () => { fishSizeOutput.value = `${Number(fishSize.value).toFixed(2)}×`; fishSizeOutput.textContent = fishSizeOutput.value; });
+fishSettingsCancel.addEventListener('click', () => fishSettingsDialog.close());
+fishSettingsApply.addEventListener('click', () => { settings.fishSimulationPreset = fishPreset.value as AquariumSettings['fishSimulationPreset']; settings.fishSimulationCount = Number(fishCount.value); settings.fishSimulationSize = Number(fishSize.value); settings.fishSimulationBehavior = fishBehavior.value as AquariumSettings['fishSimulationBehavior']; settings = normalizeSettings(settings); refreshFishDialog(); rebuildSimulation(); saveSettings(); fishSettingsDialog.close(); });
 navButton.classList.toggle('is-active', settings.navOverlayEnabled); fishButton.classList.toggle('is-active', settings.fishSimulationEnabled);
 
 let previousRenderTime = performance.now();
@@ -594,43 +712,44 @@ function render(time = performance.now()): void {
   controls?.update();
   if (modelGroup) {
     modelGroup.traverse((object) => {
-      if (!(object instanceof THREE.Mesh) || object.name !== 'WATER_Surface') return;
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        const sway = material.userData.decorSway as { uniform?: { value: number } } | undefined;
+        if (sway?.uniform) sway.uniform.value = time * 0.001 * Math.max(0.18, settings.waterAnimationSpeed);
+      }
+      if (object.name !== 'WATER_Surface') return;
       const material = object.material as THREE.MeshPhysicalMaterial;
       if (!settings.waterAnimationEnabled) {
         object.position.y = 0;
         return;
       }
       const speed = settings.waterAnimationSpeed * delta;
-      if (material.map) { material.map.wrapS = material.map.wrapT = THREE.RepeatWrapping; material.map.offset.x += speed * 0.018; material.map.offset.y += speed * 0.011; }
-      if (material.normalMap) { material.normalMap.wrapS = material.normalMap.wrapT = THREE.RepeatWrapping; material.normalMap.offset.x -= speed * 0.013; material.normalMap.offset.y += speed * 0.016; }
+      // The procedural canvases are not tileable at their 0/1 edges. Mirror
+      // wrapping keeps the animated offset continuous instead of drawing a
+      // hard seam where ordinary repeat wrapping reconnects the texture.
+      if (material.map) { material.map.wrapS = material.map.wrapT = THREE.MirroredRepeatWrapping; material.map.offset.x += speed * 0.018; material.map.offset.y += speed * 0.011; }
+      if (material.normalMap) { material.normalMap.wrapS = material.normalMap.wrapT = THREE.MirroredRepeatWrapping; material.normalMap.offset.x -= speed * 0.013; material.normalMap.offset.y += speed * 0.016; }
       object.position.y = Math.sin(time * 0.0014 * Math.max(0.1, settings.waterAnimationSpeed)) * settings.waterAnimationAmount;
     });
   }
   if (simMesh && settings.fishSimulationEnabled && simulationBounds) {
-    const activeBounds = simulationBounds;
-    const template = SIM_TEMPLATES[settings.fishSimulationPreset];
+    const template = simulationTemplate();
+    const schooling = settings.fishSimulationBehavior === 'schooling';
     const grid = new Map<string, number[]>();
     const cell = Math.max(template.size * 9, 0.45);
-    if (settings.fishSimulationPreset === 'school') simAgents.forEach((agent, index) => {
+    if (schooling) simAgents.forEach((agent, index) => {
       const key = `${Math.floor(agent.position.x / cell)},${Math.floor(agent.position.y / cell)},${Math.floor(agent.position.z / cell)}`;
       const bucket = grid.get(key) ?? []; bucket.push(index); grid.set(key, bucket);
     });
     simAgents.forEach((agent,index) => {
       agent.phase += delta;
       if (!isSwimmable(agent.position, template.size)) {
-        let recovered = false;
-        for (let attempt = 0; attempt < 80; attempt += 1) {
-          const candidate = new THREE.Vector3(
-            THREE.MathUtils.lerp(activeBounds.min.x, activeBounds.max.x, Math.random()),
-            THREE.MathUtils.lerp(simulationYRange[0] + template.size, simulationYRange[1] - template.size, Math.random()),
-            THREE.MathUtils.lerp(activeBounds.min.z, activeBounds.max.z, Math.random()),
-          );
-          if (!isSwimmable(candidate, template.size)) continue;
-          agent.position.copy(candidate); agent.homeY = candidate.y; agent.stuckFrames = 0; recovered = true; break;
-        }
+        const recovered = isSwimmable(agent.lastSafe, template.size) ? agent.lastSafe : findSafeSpawn(template.size, template.surface);
         if (!recovered) return;
+        agent.position.copy(recovered); agent.homeY = recovered.y; agent.stuckFrames = 0;
       }
-      if (settings.fishSimulationPreset === 'school') {
+      if (schooling) {
         const separation = new THREE.Vector3(); const alignment = new THREE.Vector3(); const cohesion = new THREE.Vector3(); let neighbours = 0;
         const gx = Math.floor(agent.position.x / cell); const gy = Math.floor(agent.position.y / cell); const gz = Math.floor(agent.position.z / cell);
         for (let x = gx - 1; x <= gx + 1; x += 1) for (let y = gy - 1; y <= gy + 1; y += 1) for (let z = gz - 1; z <= gz + 1; z += 1) for (const otherIndex of grid.get(`${x},${y},${z}`) ?? []) {
@@ -655,12 +774,12 @@ function render(time = performance.now()): void {
         Math.sin(agent.phase * 0.73 + index * 1.91),
         Math.sin(agent.phase * 0.41 + index * 0.37) * 0.28,
         Math.cos(agent.phase * 0.61 + index * 1.17),
-      ).multiplyScalar(settings.fishSimulationPreset === 'school' ? 0.045 : 0.085);
+      ).multiplyScalar(schooling ? 0.045 : settings.fishSimulationBehavior === 'cruising' ? 0.035 : 0.085);
       agent.velocity.addScaledVector(wander, delta);
       agent.velocity.addScaledVector(navigationAvoidance(agent.position, agent.velocity, template.size), delta * template.speed * 2.4);
-      const verticalDrift = settings.fishSimulationPreset === 'school' ? Math.sin(agent.phase * 0.37 + index) * template.size * 0.3 : 0;
-      const desiredY = settings.fishSimulationPreset === 'school' ? agent.homeY + verticalDrift : THREE.MathUtils.lerp(simulationYRange[0], simulationYRange[1], template.surface);
-      agent.velocity.y += (desiredY-agent.position.y)*delta*(settings.fishSimulationPreset === 'school' ? 0.1 : 0.18);
+      const verticalDrift = schooling ? Math.sin(agent.phase * 0.37 + index) * template.size * 0.3 : 0;
+      const desiredY = schooling ? agent.homeY + verticalDrift : THREE.MathUtils.lerp(simulationYRange[0], simulationYRange[1], template.surface);
+      agent.velocity.y += (desiredY-agent.position.y)*delta*(schooling ? 0.1 : 0.18);
       const desired = agent.velocity.clone().normalize().multiplyScalar(template.speed);
       agent.velocity.lerp(desired, Math.min(1, template.turn * delta));
       if (agent.velocity.length() < template.speed * 0.82) agent.velocity.setLength(template.speed * 0.82);
@@ -678,7 +797,11 @@ function render(time = performance.now()): void {
           agent.velocity.copy(direction.multiplyScalar(template.speed)); agent.position.copy(candidate); turned = true; break;
         }
         if (!turned) agent.velocity.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.45 + (index % 3) * 0.13);
-      } else { agent.position.copy(next); agent.stuckFrames = 0; }
+        if (agent.stuckFrames > 45) {
+          const recovered = findSafeSpawn(template.size, template.surface);
+          if (recovered) { agent.position.copy(recovered); agent.lastSafe.copy(recovered); agent.homeY = recovered.y; agent.stuckFrames = 0; }
+        }
+      } else { agent.position.copy(next); agent.lastSafe.copy(next); agent.stuckFrames = 0; }
       dummyObject.position.copy(agent.position);
       dummyObject.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), agent.velocity.clone().normalize());
       dummyObject.updateMatrix(); simMesh!.setMatrixAt(index,dummyObject.matrix);
@@ -699,7 +822,7 @@ Object.assign(window as unknown as { __aquariumMaker?: unknown }, {
     getSettings: () => JSON.parse(JSON.stringify(settings)) as AquariumSettings,
     getStats: () => ({ triangles: currentBuild?.triangles ?? 0, vertices: currentBuild?.vertices ?? 0 }),
     getNavigation: () => modelGroup?.userData.navigation ?? null,
-    getSimulation: () => simAgents.map((agent) => ({ position: agent.position.toArray(), velocity: agent.velocity.toArray(), valid: isSwimmable(agent.position, SIM_TEMPLATES[settings.fishSimulationPreset].size) })),
+    getSimulation: () => simAgents.map((agent) => ({ position: agent.position.toArray(), velocity: agent.velocity.toArray(), valid: isSwimmable(agent.position, simulationTemplate().size) })),
     exportCurrent: async () => modelGroup ? exportAquariumGLB(modelGroup, settings.exportScale) : null,
   },
 });
