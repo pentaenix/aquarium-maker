@@ -2,6 +2,11 @@
 
 Aquarium Maker is a browser-only Three.js editor for public-aquarium layouts, passages, water, terrain, and GLB export.
 
+The default export contract targets Pokemon Resort directly: 1 authored metre
+becomes 16 world units, which is exactly one Resort map cell. A 10 m × 4.8 m
+tank can therefore be placed at model scale `1.0` and renders as 10 × 4.8 cells.
+The export-scale field remains editable for non-Resort consumers.
+
 ## v2.0 passage and navigation architecture
 
 Passages are defined once as an exact 2D portal profile plus an authoritative centreline. The same profile drives the acrylic shell, the portal wall opening, decorative frames, water subtraction, dry-volume navigation data, and fish collision checks. Frame width never expands the wall cutout.

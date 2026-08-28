@@ -3,10 +3,17 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aquarium';
-import { cloneSettings, DEFAULT_SETTINGS, normalizeSettings, type AquariumSettings } from './model/settings';
+import {
+  cloneSettings,
+  DEFAULT_SETTINGS,
+  normalizeSettings,
+  RESORT_WORLD_UNITS_PER_METER,
+  type AquariumSettings,
+} from './model/settings';
 import { ControlPanel } from './ui/panel';
 
 const STORAGE_KEY = 'aquarium-maker-settings-v10-profile-volume-navigation';
+const RESORT_SCALE_MIGRATION_KEY = 'aquarium-maker-resort-scale-16-v1';
 
 type CameraView = 'iso' | 'front' | 'side' | 'top' | 'fit';
 
@@ -73,7 +80,16 @@ function loadSettings(): AquariumSettings {
 
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    return stored ? mergeSettings(JSON.parse(stored) as Partial<AquariumSettings>) : cloneSettings(DEFAULT_SETTINGS);
+    if (!stored) return cloneSettings(DEFAULT_SETTINGS);
+    const partial = JSON.parse(stored) as Partial<AquariumSettings>;
+    if (!window.localStorage.getItem(RESORT_SCALE_MIGRATION_KEY)) {
+      // Version 10 defaulted to 10 units/m. Migrate that default once while
+      // preserving every authored setting; explicit non-default scales remain
+      // untouched and the user may still change the value after migration.
+      if (partial.exportScale === 10) partial.exportScale = RESORT_WORLD_UNITS_PER_METER;
+      window.localStorage.setItem(RESORT_SCALE_MIGRATION_KEY, 'done');
+    }
+    return mergeSettings(partial);
   } catch {
     // Storage may be blocked for local files, private windows, or hardened browsers.
     return cloneSettings(DEFAULT_SETTINGS);
@@ -432,7 +448,9 @@ function updateStats(): void {
     `${displayWidth.toFixed(1)} × ${displayDepth.toFixed(1)} × ${visibleHeight.toFixed(1)} m · ${profileLabel}`;
   requireElement<HTMLElement>('#triangle-stat').textContent =
     `${currentBuild?.triangles.toLocaleString() ?? '—'} triangles`;
-  scaleBadge.textContent = `Preview in meters · export ${Number(settings.exportScale.toFixed(3))}×`;
+  scaleBadge.textContent = Math.abs(settings.exportScale - RESORT_WORLD_UNITS_PER_METER) < 1e-6
+    ? 'Preview in metres · Resort 1 m = 1 cell'
+    : `Preview in metres · custom export ${Number(settings.exportScale.toFixed(3))}×`;
 }
 
 function rebuildNow(autoFrame = false): void {

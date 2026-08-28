@@ -15,7 +15,19 @@ class FakeCanvas {
 const THREE = await import('three');
 const { buildAquarium } = await import('../app/src/model/aquarium');
 const { buildDecorItem } = await import('../app/src/model/decor');
-const { cloneSettings, createDecorItem, createPassage, DEFAULT_SETTINGS, normalizeSettings } = await import('../app/src/model/settings');
+const {
+  cloneSettings,
+  createDecorItem,
+  createPassage,
+  DEFAULT_SETTINGS,
+  normalizeSettings,
+  RESORT_WORLD_UNITS_PER_METER,
+} = await import('../app/src/model/settings');
+
+if (DEFAULT_SETTINGS.exportScale !== RESORT_WORLD_UNITS_PER_METER ||
+    RESORT_WORLD_UNITS_PER_METER !== 16) {
+  throw new Error('Default exports must preserve the Pokemon Resort 1 metre = 1 cell contract');
+}
 
 function validate(label: string, settings: ReturnType<typeof cloneSettings>) {
   const build = buildAquarium(normalizeSettings(settings));

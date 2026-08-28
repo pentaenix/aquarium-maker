@@ -656,7 +656,10 @@ export class ControlPanel {
     const rotated = this.settings.footprintRotation === 90 || this.settings.footprintRotation === 270;
     const exportWidth = (rotated ? this.settings.depth : this.settings.width) * this.settings.exportScale;
     const exportDepth = (rotated ? this.settings.width : this.settings.depth) * this.settings.exportScale;
-    document.querySelector<HTMLElement>('#footer-export-dimensions')!.textContent = `${exportWidth.toFixed(0)} × ${exportDepth.toFixed(0)} × ${(physicalHeight * this.settings.exportScale).toFixed(0)} units`;
+    const resortContract = Math.abs(this.settings.exportScale - DEFAULT_SETTINGS.exportScale) < 1e-6
+      ? ' · 1 m = 1 cell'
+      : '';
+    document.querySelector<HTMLElement>('#footer-export-dimensions')!.textContent = `${exportWidth.toFixed(0)} × ${exportDepth.toFixed(0)} × ${(physicalHeight * this.settings.exportScale).toFixed(0)} units${resortContract}`;
   }
 
   private refreshTabs(): void {

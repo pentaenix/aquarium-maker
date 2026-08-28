@@ -69,6 +69,11 @@ export interface PassageSettings {
   separatorWidth: number;
 }
 
+// Pokemon Resort uses 16 world units for one map cell. Exporting one authored
+// metre at the same scale makes a 10 m aquarium occupy exactly 10 cells when
+// placed at model scale 1.0.
+export const RESORT_WORLD_UNITS_PER_METER = 16;
+
 export interface CornerModes {
   frontLeft: CornerMode;
   frontRight: CornerMode;
@@ -389,7 +394,7 @@ export const DEFAULT_SETTINGS: AquariumSettings = {
 
   passages: [],
   exportNavigationJson: true,
-  exportScale: 10,
+  exportScale: RESORT_WORLD_UNITS_PER_METER,
 };
 
 export function clonePassage(source: PassageSettings): PassageSettings {
