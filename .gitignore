@@ -2,6 +2,7 @@
 node_modules/
 .DS_Store
 *.log
+/.cache/
 
 # Generated application bundles (recreated by `npm run build`)
 /dist/

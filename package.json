@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build && node scripts/sync-build.mjs && node scripts/make-standalone.mjs",
     "preview": "vite preview",
     "check": "tsc --noEmit && vite build",
-    "validate:model": "tsx scripts/validate-model.ts"
+    "validate:model": "tsx scripts/validate-model.ts",
+    "validate:kernel": "node scripts/aquarium-kernel/verify-wasm.mjs"
   },
   "dependencies": {
     "polygon-clipping": "^0.15.7",
