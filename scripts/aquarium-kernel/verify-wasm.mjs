@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -10,10 +10,7 @@ const resortRoot = resolve(makerRoot, "../pokemon-resort");
 const outputDirectory = join(makerRoot, ".cache/aquarium-kernel");
 const emscriptenCache = join(makerRoot, ".cache/emscripten");
 const modulePath = join(outputDirectory, "aquarium_geometry.mjs");
-const goldenPath = join(
-  resortRoot,
-  "shared/aquarium_geometry/goldens/rectangle-even.aquarium.json",
-);
+const goldenDirectory = join(resortRoot, "shared/aquarium_geometry/goldens");
 const nativeDump = join(resortRoot, "build/aquarium_geometry_golden_dump");
 
 mkdirSync(outputDirectory, { recursive: true });
@@ -30,6 +27,8 @@ const includeArguments = [
   "-I", join(resortRoot, "tools/aquarium_geometry_wasm"),
 ];
 const sourceArguments = [
+  join(resortRoot, "shared/aquarium_geometry/src/Footprint.cpp"),
+  join(resortRoot, "shared/aquarium_geometry/src/GeometryBuilder.cpp"),
   join(resortRoot, "shared/aquarium_geometry/src/Kernel.cpp"),
   join(resortRoot, "src/core/config/Json.cpp"),
   join(resortRoot, "src/gameplay/world3d/aquarium/construction/AquariumDesign.cpp"),
@@ -54,35 +53,44 @@ execFileSync("em++", [
   stdio: "inherit",
 });
 
-const designJson = readFileSync(goldenPath, "utf8");
-const nativeJson = execFileSync(nativeDump, [goldenPath], { encoding: "utf8" }).trim();
 const createKernelModule = (await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`)).default;
 const kernelModule = await createKernelModule();
-const wasmJson = kernelModule.buildAquariumDocument(designJson);
+const goldenFiles = readdirSync(goldenDirectory)
+  .filter((name) => name.endsWith(".aquarium.json"))
+  .sort();
+const results = [];
+for (const name of goldenFiles) {
+  const goldenPath = join(goldenDirectory, name);
+  const designJson = readFileSync(goldenPath, "utf8");
+  const nativeResult = JSON.parse(execFileSync(nativeDump, [goldenPath], { encoding: "utf8" }).trim());
+  const wasmResult = JSON.parse(kernelModule.buildAquariumDocument(designJson));
+  assert.deepStrictEqual(wasmResult, nativeResult, `native and WASM diverged for ${name}`);
+  assert.equal(wasmResult.kernelAbiVersion, 2);
+  assert.equal(wasmResult.designSchemaVersion, 1);
+  assert.equal(wasmResult.valid, true);
+  results.push({ name, designJson, result: wasmResult });
+}
 
-const nativeResult = JSON.parse(nativeJson);
-const wasmResult = JSON.parse(wasmJson);
-assert.deepStrictEqual(wasmResult, nativeResult, "native and WASM kernel output diverged");
-assert.equal(wasmResult.kernelAbiVersion, 1);
-assert.equal(wasmResult.designSchemaVersion, 1);
-assert.equal(wasmResult.contentHash, "fnv1a64:5f18ef72142032cb");
-assert.equal(wasmResult.statistics.vertexCount, 296);
-assert.equal(wasmResult.statistics.collisionCellCount, 16);
+const rectangle = results.find(({ name }) => name === "rectangle-even.aquarium.json");
+assert.ok(rectangle);
+assert.equal(rectangle.result.contentHash, "fnv1a64:ae7b0a30ce4c3d58");
+assert.equal(rectangle.result.statistics.vertexCount, 296);
+assert.equal(rectangle.result.statistics.collisionCellCount, 16);
 
 for (let index = 0; index < 20; index += 1) {
-  kernelModule.buildAquariumDocument(designJson);
+  kernelModule.buildAquariumDocument(rectangle.designJson);
 }
 const timings = [];
 for (let index = 0; index < 200; index += 1) {
   const start = performance.now();
-  kernelModule.buildAquariumDocument(designJson);
+  kernelModule.buildAquariumDocument(rectangle.designJson);
   timings.push(performance.now() - start);
 }
 timings.sort((left, right) => left - right);
 const p95 = timings[Math.floor((timings.length - 1) * 0.95)];
 
 console.log(
-  `aquarium kernel parity: ok (${wasmResult.contentHash}, ` +
-    `${wasmResult.statistics.vertexCount} vertices, ${wasmResult.statistics.triangleCount} triangles)`,
+  `aquarium kernel parity: ok (${results.length} goldens, ABI ${rectangle.result.kernelAbiVersion}, ` +
+    `${rectangle.result.contentHash})`,
 );
 console.log(`aquarium kernel wasm adapter: samples=${timings.length} p95_ms=${p95.toFixed(4)}`);

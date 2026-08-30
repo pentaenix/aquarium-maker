@@ -4,11 +4,12 @@
   "version": "2.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build && node scripts/sync-build.mjs && node scripts/make-standalone.mjs",
+    "kernel:browser": "node scripts/aquarium-kernel/build-browser-wasm.mjs",
+    "dev": "npm run kernel:browser && vite",
+    "build": "npm run kernel:browser && tsc --noEmit && vite build && node scripts/sync-build.mjs && node scripts/make-standalone.mjs",
     "preview": "vite preview",
-    "check": "tsc --noEmit && vite build",
-    "validate:model": "tsx scripts/validate-model.ts",
+    "check": "npm run kernel:browser && tsc --noEmit && vite build",
+    "validate:model": "npm run kernel:browser && tsx scripts/validate-model.ts",
     "validate:kernel": "node scripts/aquarium-kernel/verify-wasm.mjs"
   },
   "dependencies": {

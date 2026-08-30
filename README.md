@@ -41,7 +41,21 @@ The exported GLB contains `NAV_Aquarium`, `NAV_Region_*`, and `NAV_Portal_*` nod
 npm install
 npm run build
 npm run validate:model
+npm run validate:kernel
 ```
+
+The maker has two intentionally separate geometry paths. Standard, whole-cell
+rectangle/L/U tanks with half-cell heights, uniform quarter-cell roundness,
+flat sand, 55 mm clear glass, and no passages or decor are built by the same
+deterministic C++ kernel shipped with Pokemon Resort. The browser consumes a
+single-file WASM build generated from `../pokemon-resort/shared/aquarium_geometry`.
+Advanced terrain, asymmetric arms, mixed corners, solid walls, decor, and the
+legacy passage system remain on the developer-only Three.js generator path.
+
+`npm run check`, `npm run build`, and `./run` regenerate the browser kernel.
+They therefore require Emscripten's `em++` on `PATH`. `npm run validate:kernel`
+compares every shared golden fixture against native and WASM output and rejects
+stale ABI artifacts.
 
 For day-to-day local development, use the one-command launcher instead:
 

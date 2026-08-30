@@ -15,6 +15,7 @@ class FakeCanvas {
 const THREE = await import('three');
 const { buildAquarium } = await import('../app/src/model/aquarium');
 const { buildDecorItem } = await import('../app/src/model/decor');
+const { resortKernelCompatibility } = await import('../app/src/model/resortKernel');
 const {
   cloneSettings,
   createDecorItem,
@@ -27,6 +28,45 @@ const {
 if (DEFAULT_SETTINGS.exportScale !== RESORT_WORLD_UNITS_PER_METER ||
     RESORT_WORLD_UNITS_PER_METER !== 16) {
   throw new Error('Default exports must preserve the Pokemon Resort 1 metre = 1 cell contract');
+}
+
+const compatibleRectangle = cloneSettings(DEFAULT_SETTINGS);
+Object.assign(compatibleRectangle, {
+  width: 6, depth: 4, height: 4, groundIrregularity: 0, groundMoundHeight: 0,
+  radii: { frontLeft: 0.5, frontRight: 0.5, backRight: 0.5, backLeft: 0.5 },
+});
+const rectangleContract = resortKernelCompatibility(compatibleRectangle);
+if (!rectangleContract.compatible || rectangleContract.tank?.shape !== 'rectangle' ||
+    rectangleContract.tank.widthCells !== 6 || rectangleContract.tank.depthCells !== 4 ||
+    rectangleContract.tank.heightSteps !== 8 || rectangleContract.tank.cornerRadiusSteps !== 2) {
+  throw new Error('Maker rectangle settings did not map to the canonical Resort kernel contract');
+}
+
+const compatibleL = cloneSettings(compatibleRectangle);
+compatibleL.footprint = 'lShape';
+Object.assign(compatibleL, {
+  lHorizontalArmLength: 7, lVerticalArmLength: 6,
+  lVerticalArmWidth: 4, lHorizontalArmWidth: 3,
+});
+for (const key of Object.keys(compatibleL.shapeCornerModes) as Array<keyof typeof compatibleL.shapeCornerModes>) {
+  compatibleL.shapeCornerModes[key] = key === 'lInnerElbow' ? 'square' : 'rounded';
+  compatibleL.shapeCornerRadii[key] = 0.5;
+}
+const lContract = resortKernelCompatibility(compatibleL);
+if (!lContract.compatible || lContract.tank?.shape !== 'l' ||
+    lContract.tank.notchWidthCells !== 3 || lContract.tank.notchDepthCells !== 3) {
+  throw new Error('Maker L settings did not map to the canonical Resort kernel contract');
+}
+
+const incompatibleTerrain = cloneSettings(compatibleRectangle);
+incompatibleTerrain.groundMoundHeight = 0.1;
+if (resortKernelCompatibility(incompatibleTerrain).compatible) {
+  throw new Error('Advanced maker terrain was incorrectly routed through the Resort kernel');
+}
+const incompatibleRotation = cloneSettings(compatibleRectangle);
+incompatibleRotation.footprintRotation = 45;
+if (resortKernelCompatibility(incompatibleRotation).compatible) {
+  throw new Error('Non-quarter-turn rotation was incorrectly routed through the Resort kernel');
 }
 
 function validate(label: string, settings: ReturnType<typeof cloneSettings>) {

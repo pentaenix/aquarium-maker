@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildAquarium, exportAquariumGLB, type AquariumBuild } from './model/aquarium';
+import { buildResortKernelAquarium } from './model/resortKernel';
 import {
   cloneSettings,
   DEFAULT_SETTINGS,
@@ -453,9 +454,18 @@ function updateStats(): void {
     : `Preview in metres · custom export ${Number(settings.exportScale.toFixed(3))}×`;
 }
 
-function rebuildNow(autoFrame = false): void {
+let rebuildGeneration = 0;
+
+async function rebuildNow(autoFrame = false): Promise<void> {
+  const generation = ++rebuildGeneration;
+  const requestedSettings = cloneSettings(settings);
   try {
-    const nextBuild = buildAquarium(settings);
+    const nextBuild = await buildResortKernelAquarium(requestedSettings)
+      ?? buildAquarium(requestedSettings);
+    if (generation !== rebuildGeneration) {
+      nextBuild.dispose();
+      return;
+    }
     if (currentBuild) {
       if (decorHighlight) { scene.remove(decorHighlight); decorHighlight.geometry.dispose(); (decorHighlight.material as THREE.Material).dispose(); decorHighlight = null; }
       scene.remove(currentBuild.group);
@@ -467,7 +477,7 @@ function rebuildNow(autoFrame = false): void {
     updateDecorHighlight();
     refreshPreviewHelpers();
     panel?.setDecorValidation((nextBuild.group.userData.decor?.invalid ?? []) as Array<{ id: string; reason: string }>);
-    lastValidSettings = cloneSettings(settings);
+    lastValidSettings = requestedSettings;
     updateStats();
     saveSettings();
 
@@ -476,6 +486,7 @@ function rebuildNow(autoFrame = false): void {
       firstBuild = false;
     }
   } catch (error) {
+    if (generation !== rebuildGeneration) return;
     console.error('Could not rebuild aquarium:', error);
     const detail = error instanceof Error ? error.message : 'Those settings could not be applied';
     showToast(detail.length > 92 ? `${detail.slice(0, 89)}…` : detail);
@@ -487,7 +498,7 @@ function rebuildNow(autoFrame = false): void {
 
 function scheduleRebuild(structural: boolean): void {
   window.clearTimeout(rebuildTimer);
-  rebuildTimer = window.setTimeout(() => rebuildNow(false), structural ? 55 : 85);
+  rebuildTimer = window.setTimeout(() => { void rebuildNow(false); }, structural ? 55 : 85);
 }
 
 function fitDistance(direction: THREE.Vector3): { position: THREE.Vector3; target: THREE.Vector3 } {

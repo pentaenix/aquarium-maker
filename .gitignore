@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 *.log
 /.cache/
+/app/src/generated/aquarium_geometry.mjs
 
 # Generated application bundles (recreated by `npm run build`)
 /dist/
