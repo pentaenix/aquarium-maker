@@ -9,11 +9,11 @@ import {
   type ShapeCornerKey,
 } from './settings';
 
-const KERNEL_ABI_VERSION = 3;
+const KERNEL_ABI_VERSION = 4;
 const WORLD_UNITS_PER_METRE = 16;
 const EPSILON = 1e-6;
 
-type KernelMaterial = 'structure' | 'sand' | 'water' | 'glass';
+type KernelMaterial = 'structure' | 'sand' | 'water-volume' | 'water-surface' | 'glass';
 
 interface KernelMesh {
   material: KernelMaterial;
@@ -43,6 +43,7 @@ interface CompatibleTank {
   notchDepthCells?: number;
   heightSteps: number;
   cornerRadiusSteps: number;
+  cornerRadii: Array<{ vertex: { column: number; row: number }; radiusSteps: number }>;
   rotationQuarterTurns: number;
 }
 
@@ -63,24 +64,24 @@ function stepped(value: number, stepsPerUnit: number): number | undefined {
   return whole(value * stepsPerUnit);
 }
 
-function uniformRadiusSteps(settings: AquariumSettings): number | undefined {
+function resortCornerSteps(settings: AquariumSettings): Map<string, number> | undefined {
+  const result = new Map<string, number>();
   if (settings.footprint === 'rectangle') {
-    const values = Object.keys(settings.radii).map((key) => {
+    for (const key of Object.keys(settings.radii)) {
       const corner = key as keyof typeof settings.radii;
       const mode = settings.cornerModes[corner];
       if (mode === 'chamfer') return undefined;
-      return mode === 'square' ? 0 : stepped(settings.radii[corner], 4);
-    });
-    if (values.some((value) => value === undefined) ||
-        values.some((value) => value !== values[0])) return undefined;
-    return values[0];
+      const value = mode === 'square' ? 0 : stepped(settings.radii[corner], 4);
+      if (value === undefined) return undefined;
+      result.set(corner, value);
+    }
+    return result;
   }
 
   const keys = settings.footprint === 'lShape'
     ? L_SHAPE_CORNER_KEYS : U_SHAPE_CORNER_KEYS;
   const concave = new Set<ShapeCornerKey>(settings.footprint === 'lShape'
     ? ['lInnerElbow'] : ['uInnerRight', 'uInnerLeft']);
-  const convexValues: number[] = [];
   for (const key of keys) {
     const mode = settings.shapeCornerModes[key];
     if (concave.has(key)) {
@@ -90,10 +91,18 @@ function uniformRadiusSteps(settings: AquariumSettings): number | undefined {
     if (mode === 'chamfer') return undefined;
     const value = mode === 'square' ? 0 : stepped(settings.shapeCornerRadii[key], 4);
     if (value === undefined) return undefined;
-    convexValues.push(value);
+    result.set(key, value);
   }
-  return convexValues.length > 0 && convexValues.every((value) => value === convexValues[0])
-    ? convexValues[0] : undefined;
+  return result;
+}
+
+function rotateVertex(
+  column: number, row: number, width: number, depth: number, rotation: number,
+): { column: number; row: number } {
+  if (rotation === 1) return { column: depth - row, row: column };
+  if (rotation === 2) return { column: width - column, row: depth - row };
+  if (rotation === 3) return { column: row, row: width - column };
+  return { column, row };
 }
 
 export function resortKernelCompatibility(
@@ -118,9 +127,9 @@ export function resortKernelCompatibility(
   if (heightSteps === undefined || heightSteps < 4 || heightSteps > 12) {
     return { compatible: false, reason: 'height must use Resort half-cell steps' };
   }
-  const cornerRadiusSteps = uniformRadiusSteps(settings);
-  if (cornerRadiusSteps === undefined) {
-    return { compatible: false, reason: 'corners must share Resort quarter-cell roundness' };
+  const cornerSteps = resortCornerSteps(settings);
+  if (cornerSteps === undefined) {
+    return { compatible: false, reason: 'corners must use square or Resort quarter-cell roundness' };
   }
   const rotationQuarterTurns = whole(settings.footprintRotation / 90);
   if (rotationQuarterTurns === undefined) {
@@ -166,6 +175,29 @@ export function resortKernelCompatibility(
       (shape !== 'rectangle' && (notchWidthCells === undefined || notchDepthCells === undefined))) {
     return { compatible: false, reason: 'footprint must use whole, symmetric Resort cells' };
   }
+  const rotation = ((rotationQuarterTurns % 4) + 4) % 4;
+  const vertices: Array<[string, number, number]> = shape === 'rectangle' ? [
+    ['backLeft', 0, 0], ['backRight', widthCells, 0],
+    ['frontRight', widthCells, depthCells], ['frontLeft', 0, depthCells],
+  ] : shape === 'l' ? [
+    ['lBackLeft', 0, 0], ['lBackRight', widthCells, 0],
+    ['lOuterRight', widthCells, depthCells - notchDepthCells!],
+    ['lFrontRight', widthCells - notchWidthCells!, depthCells],
+    ['lFrontLeft', 0, depthCells],
+  ] : [
+    ['uBackLeft', 0, 0], ['uBackRight', widthCells, 0],
+    ['uFrontRight', widthCells, depthCells],
+    ['uMouthRight', (widthCells + notchWidthCells!) / 2, depthCells],
+    ['uMouthLeft', (widthCells - notchWidthCells!) / 2, depthCells],
+    ['uFrontLeft', 0, depthCells],
+  ];
+  const cornerRadii = vertices.map(([key, column, row]) => ({
+    vertex: rotateVertex(column, row, widthCells!, depthCells!, rotation),
+    radiusSteps: cornerSteps.get(key) ?? 0,
+  }));
+  const uniformRadius = cornerRadii.length > 0 &&
+    cornerRadii.every(({ radiusSteps }) => radiusSteps === cornerRadii[0]!.radiusSteps)
+    ? cornerRadii[0]!.radiusSteps : undefined;
   return {
     compatible: true,
     tank: {
@@ -175,8 +207,9 @@ export function resortKernelCompatibility(
       notchWidthCells,
       notchDepthCells,
       heightSteps,
-      cornerRadiusSteps,
-      rotationQuarterTurns: ((rotationQuarterTurns % 4) + 4) % 4,
+      cornerRadiusSteps: uniformRadius ?? 0,
+      cornerRadii: uniformRadius === undefined ? cornerRadii : [],
+      rotationQuarterTurns: rotation,
     },
   };
 }
@@ -197,7 +230,7 @@ function designJson(tank: CompatibleTank): string {
   }
   return JSON.stringify({
     schema: 'pokemon-resort-aquarium-design',
-    schemaVersion: 2,
+    schemaVersion: 3,
     designId: 'aqd_maker_resort_preview',
     mapId: 'aquarium12',
     revision: 0,
@@ -216,6 +249,7 @@ function designJson(tank: CompatibleTank): string {
       footprint,
       heightSteps: tank.heightSteps,
       cornerRadiusSteps: tank.cornerRadiusSteps,
+      cornerRadii: tank.cornerRadii,
       substrate: { kind: 'sand-flat' },
       glass: { style: 'clear-fixed-v1' },
       tunnels: [],
@@ -229,9 +263,14 @@ function materialFor(tag: KernelMaterial): THREE.Material {
     transmission: 0.97, transparent: true, opacity: 0.115, depthWrite: false,
     ior: 1.49, thickness: 0.055,
   });
-  if (tag === 'water') return new THREE.MeshPhysicalMaterial({
-    name: 'KERNEL_Water', color: 0x2a9ed6, roughness: 0.12,
-    transmission: 0.5, transparent: true, opacity: 0.68, depthWrite: false,
+  if (tag === 'water-volume') return new THREE.MeshPhysicalMaterial({
+    name: 'KERNEL_WaterVolume', color: 0x1a7eae, roughness: 0.18,
+    transmission: 0.58, transparent: true, opacity: 0.18, depthWrite: false,
+  });
+  if (tag === 'water-surface') return new THREE.MeshPhysicalMaterial({
+    name: 'KERNEL_WaterSurface', color: 0x42bddf, roughness: 0.1,
+    transmission: 0.5, transparent: true, opacity: 0.36, depthWrite: false,
+    side: THREE.DoubleSide,
   });
   if (tag === 'sand') return new THREE.MeshStandardMaterial({
     name: 'KERNEL_Sand_Flat', color: 0xc8ad79, roughness: 0.92,
@@ -275,7 +314,8 @@ function aquariumBuildFromKernel(result: KernelResult): AquariumBuild {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = `KERNEL_${semantic.material.toUpperCase()}`;
     if (semantic.material === 'glass') mesh.renderOrder = 30;
-    if (semantic.material === 'water') mesh.renderOrder = 20;
+    if (semantic.material === 'water-volume') mesh.renderOrder = 20;
+    if (semantic.material === 'water-surface') mesh.renderOrder = 21;
     group.add(mesh);
   }
   const navigation = result.navigation;

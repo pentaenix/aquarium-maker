@@ -41,6 +41,18 @@ if (!rectangleContract.compatible || rectangleContract.tank?.shape !== 'rectangl
     rectangleContract.tank.heightSteps !== 8 || rectangleContract.tank.cornerRadiusSteps !== 2) {
   throw new Error('Maker rectangle settings did not map to the canonical Resort kernel contract');
 }
+const independentRectangle = cloneSettings(compatibleRectangle);
+independentRectangle.radii = {
+  frontLeft: 0.25, frontRight: 0.5, backRight: 0.75, backLeft: 0,
+};
+independentRectangle.cornerModes.backLeft = 'square';
+const independentContract = resortKernelCompatibility(independentRectangle);
+if (!independentContract.compatible || independentContract.tank?.cornerRadiusSteps !== 0 ||
+    independentContract.tank.cornerRadii.length !== 4 ||
+    !independentContract.tank.cornerRadii.some(({ vertex, radiusSteps }) =>
+      vertex.column === 0 && vertex.row === 4 && radiusSteps === 1)) {
+  throw new Error('Independent maker corners did not map to Resort schema 3 overrides');
+}
 
 const compatibleL = cloneSettings(compatibleRectangle);
 compatibleL.footprint = 'lShape';
