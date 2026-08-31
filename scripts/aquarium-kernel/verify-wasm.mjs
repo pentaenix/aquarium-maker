@@ -65,7 +65,7 @@ for (const name of goldenFiles) {
   const nativeResult = JSON.parse(execFileSync(nativeDump, [goldenPath], { encoding: "utf8" }).trim());
   const wasmResult = JSON.parse(kernelModule.buildAquariumDocument(designJson));
   assert.deepStrictEqual(wasmResult, nativeResult, `native and WASM diverged for ${name}`);
-  assert.equal(wasmResult.kernelAbiVersion, 4);
+  assert.equal(wasmResult.kernelAbiVersion, 5);
   assert.equal(wasmResult.designSchemaVersion, 3);
   assert.equal(wasmResult.valid, true);
   results.push({ name, designJson, result: wasmResult });
@@ -73,9 +73,9 @@ for (const name of goldenFiles) {
 
 const rectangle = results.find(({ name }) => name === "rectangle-even.aquarium.json");
 assert.ok(rectangle);
-assert.equal(rectangle.result.contentHash, "fnv1a64:b36e4dbc5fa24b00");
-assert.equal(rectangle.result.statistics.vertexCount, 168);
-assert.equal(rectangle.result.statistics.collisionCellCount, 16);
+assert.equal(rectangle.result.contentHash, "fnv1a64:536e7ce1f5e725f9");
+assert.equal(rectangle.result.statistics.vertexCount, 188);
+assert.equal(rectangle.result.statistics.collisionCellCount, 24);
 
 for (let index = 0; index < 20; index += 1) {
   kernelModule.buildAquariumDocument(rectangle.designJson);
