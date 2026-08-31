@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -8,6 +8,8 @@ const makerRoot = resolve(scriptDirectory, '../..');
 const resortRoot = resolve(makerRoot, '../pokemon-resort');
 const outputDirectory = join(makerRoot, 'app/src/generated');
 const emscriptenCache = join(makerRoot, '.cache/emscripten');
+const kernelTypesPath = join(
+  resortRoot, 'shared/aquarium_geometry/include/aquarium_geometry/Types.hpp');
 
 mkdirSync(outputDirectory, { recursive: true });
 mkdirSync(emscriptenCache, { recursive: true });
@@ -38,4 +40,9 @@ execFileSync('em++', [
   stdio: 'inherit',
 });
 
-console.log('Aquarium geometry browser WASM generated from Resort kernel ABI 2.');
+const kernelTypes = readFileSync(kernelTypesPath, 'utf8');
+const abiMatch = kernelTypes.match(/kKernelAbiVersion\s*=\s*(\d+)/);
+if (!abiMatch) {
+  throw new Error(`Could not read the aquarium kernel ABI from ${kernelTypesPath}`);
+}
+console.log(`Aquarium geometry browser WASM generated from Resort kernel ABI ${abiMatch[1]}.`);

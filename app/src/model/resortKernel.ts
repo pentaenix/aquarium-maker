@@ -9,7 +9,7 @@ import {
   type ShapeCornerKey,
 } from './settings';
 
-const KERNEL_ABI_VERSION = 2;
+const KERNEL_ABI_VERSION = 3;
 const WORLD_UNITS_PER_METRE = 16;
 const EPSILON = 1e-6;
 
@@ -197,7 +197,7 @@ function designJson(tank: CompatibleTank): string {
   }
   return JSON.stringify({
     schema: 'pokemon-resort-aquarium-design',
-    schemaVersion: 1,
+    schemaVersion: 2,
     designId: 'aqd_maker_resort_preview',
     mapId: 'aquarium12',
     revision: 0,
@@ -207,6 +207,7 @@ function designJson(tank: CompatibleTank): string {
       verticalStepWorldUnits: 8,
       radiusStepWorldUnits: 4,
       origin: 'map-north-west',
+      placementOffsetCells: [0.5, 0.5],
       cellConvention: 'integer-boundaries-half-cell-centres',
     },
     populationPolicy: { id: 'placeholder-wishiwashi', version: 1 },
