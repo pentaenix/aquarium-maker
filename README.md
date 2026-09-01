@@ -44,9 +44,9 @@ npm run validate:model
 npm run validate:kernel
 ```
 
-The maker has two intentionally separate geometry paths. Standard, whole-cell
-rectangle/L/U tanks with half-cell heights, uniform quarter-cell roundness,
-flat sand, 55 mm clear glass, and no passages or decor are built by the same
+The maker has two intentionally separate geometry paths. Standard and discrete
+below-floor, whole-cell rectangle/L/U tanks with half-cell heights/depths,
+quarter-cell roundness, flat sand, 55 mm clear glass, and no passages or decor are built by the same
 deterministic C++ kernel shipped with Pokemon Resort. The browser consumes a
 single-file WASM build generated from `../pokemon-resort/shared/aquarium_geometry`.
 Advanced terrain, asymmetric arms, mixed corners, solid walls, decor, and the

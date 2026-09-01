@@ -38,8 +38,18 @@ Object.assign(compatibleRectangle, {
 const rectangleContract = resortKernelCompatibility(compatibleRectangle);
 if (!rectangleContract.compatible || rectangleContract.tank?.shape !== 'rectangle' ||
     rectangleContract.tank.widthCells !== 6 || rectangleContract.tank.depthCells !== 4 ||
-    rectangleContract.tank.heightSteps !== 8 || rectangleContract.tank.cornerRadiusSteps !== 2) {
+    rectangleContract.tank.heightSteps !== 8 || rectangleContract.tank.depthSteps !== 0 ||
+    rectangleContract.tank.cornerRadiusSteps !== 2) {
   throw new Error('Maker rectangle settings did not map to the canonical Resort kernel contract');
+}
+const compatibleBelowFloor = cloneSettings(compatibleRectangle);
+Object.assign(compatibleBelowFloor, {
+  profile: 'belowFloor', heightAboveFloor: 2, depthBelowFloor: 3,
+});
+const belowFloorContract = resortKernelCompatibility(compatibleBelowFloor);
+if (!belowFloorContract.compatible || belowFloorContract.tank?.heightSteps !== 4 ||
+    belowFloorContract.tank.depthSteps !== 6) {
+  throw new Error('Maker below-floor settings did not map to Resort depth steps');
 }
 const independentRectangle = cloneSettings(compatibleRectangle);
 independentRectangle.radii = {
@@ -51,7 +61,7 @@ if (!independentContract.compatible || independentContract.tank?.cornerRadiusSte
     independentContract.tank.cornerRadii.length !== 4 ||
     !independentContract.tank.cornerRadii.some(({ vertex, radiusSteps }) =>
       vertex.column === 0 && vertex.row === 4 && radiusSteps === 1)) {
-  throw new Error('Independent maker corners did not map to Resort schema 3 overrides');
+  throw new Error('Independent maker corners did not map to Resort per-corner overrides');
 }
 
 const compatibleL = cloneSettings(compatibleRectangle);

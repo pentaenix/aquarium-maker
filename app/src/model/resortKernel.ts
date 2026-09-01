@@ -9,7 +9,7 @@ import {
   type ShapeCornerKey,
 } from './settings';
 
-const KERNEL_ABI_VERSION = 5;
+const KERNEL_ABI_VERSION = 6;
 const WORLD_UNITS_PER_METRE = 16;
 const EPSILON = 1e-6;
 
@@ -32,7 +32,7 @@ interface KernelResult {
     layers: Array<{ floorY: number; ceilingY: number; outer: number[][]; holes: number[][][] }>;
     suggestedSpawns: number[][];
   };
-  statistics?: { triangleCount: number; vertexCount: number };
+  statistics?: { triangleCount: number; vertexCount: number; waterVolumeLitres: number };
 }
 
 interface CompatibleTank {
@@ -42,6 +42,7 @@ interface CompatibleTank {
   notchWidthCells?: number;
   notchDepthCells?: number;
   heightSteps: number;
+  depthSteps: number;
   cornerRadiusSteps: number;
   cornerRadii: Array<{ vertex: { column: number; row: number }; radiusSteps: number }>;
   rotationQuarterTurns: number;
@@ -108,7 +109,9 @@ function rotateVertex(
 export function resortKernelCompatibility(
   settings: AquariumSettings,
 ): ResortKernelCompatibility {
-  if (settings.profile !== 'standard') return { compatible: false, reason: 'standard profile required' };
+  if (settings.profile !== 'standard' && settings.profile !== 'belowFloor') {
+    return { compatible: false, reason: 'standard or below-floor profile required' };
+  }
   if (settings.footprintMirrored) return { compatible: false, reason: 'mirrored footprints are not supported' };
   if (settings.groundPreset !== 'sand' || settings.groundIrregularity !== 0 ||
       settings.groundMoundHeight !== 0) {
@@ -123,9 +126,16 @@ export function resortKernelCompatibility(
   if (Object.values(settings.wallModes).some((mode) => mode !== 'glass')) {
     return { compatible: false, reason: 'clear glass walls are required' };
   }
-  const heightSteps = stepped(settings.height, 2);
+  const heightSteps = stepped(
+    settings.profile === 'belowFloor' ? settings.heightAboveFloor : settings.height, 2,
+  );
   if (heightSteps === undefined || heightSteps < 4 || heightSteps > 12) {
     return { compatible: false, reason: 'height must use Resort half-cell steps' };
+  }
+  const depthSteps = settings.profile === 'belowFloor'
+    ? stepped(settings.depthBelowFloor, 2) : 0;
+  if (depthSteps === undefined || depthSteps < 0 || depthSteps > 12) {
+    return { compatible: false, reason: 'below-floor depth must use Resort half-cell steps' };
   }
   const cornerSteps = resortCornerSteps(settings);
   if (cornerSteps === undefined) {
@@ -207,6 +217,7 @@ export function resortKernelCompatibility(
       notchWidthCells,
       notchDepthCells,
       heightSteps,
+      depthSteps,
       cornerRadiusSteps: uniformRadius ?? 0,
       cornerRadii: uniformRadius === undefined ? cornerRadii : [],
       rotationQuarterTurns: rotation,
@@ -230,7 +241,7 @@ function designJson(tank: CompatibleTank): string {
   }
   return JSON.stringify({
     schema: 'pokemon-resort-aquarium-design',
-    schemaVersion: 3,
+    schemaVersion: 4,
     designId: 'aqd_maker_resort_preview',
     mapId: 'aquarium12',
     revision: 0,
@@ -248,6 +259,7 @@ function designJson(tank: CompatibleTank): string {
       id: 'tank_maker_resort_preview',
       footprint,
       heightSteps: tank.heightSteps,
+      depthSteps: tank.depthSteps,
       cornerRadiusSteps: tank.cornerRadiusSteps,
       cornerRadii: tank.cornerRadii,
       substrate: { kind: 'sand-flat' },
@@ -339,6 +351,7 @@ function aquariumBuildFromKernel(result: KernelResult): AquariumBuild {
       })),
       spawnSuggestions: (navigation?.suggestedSpawns ?? []).map(([x, y, z]) =>
         [x! / WORLD_UNITS_PER_METRE, y! / WORLD_UNITS_PER_METRE, z! / WORLD_UNITS_PER_METRE]),
+      approximateWaterVolumeM3: (result.statistics?.waterVolumeLitres ?? 0) / 1000,
     },
   };
   return {
