@@ -49,6 +49,10 @@ below-floor, whole-cell rectangle/L/U tanks with half-cell heights/depths,
 quarter-cell roundness, flat sand, 55 mm clear glass, and no passages or decor are built by the same
 deterministic C++ kernel shipped with Pokemon Resort. The browser consumes a
 single-file WASM build generated from `../pokemon-resort/shared/aquarium_geometry`.
+ABI 7 also accepts canonical square-corner rectangular Resort tanks with
+straight or one-elbow whole-cell tunnels; native/WASM goldens cover that path.
+The maker's freeform passage controls still use its advanced generator until a
+separate discrete compatibility mapper is completed.
 Advanced terrain, asymmetric arms, mixed corners, solid walls, decor, and the
 legacy passage system remain on the developer-only Three.js generator path.
 
