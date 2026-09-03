@@ -9,7 +9,7 @@ import {
   type ShapeCornerKey,
 } from './settings';
 
-const KERNEL_ABI_VERSION = 11;
+const KERNEL_ABI_VERSION = 12;
 const WORLD_UNITS_PER_METRE = 16;
 const EPSILON = 1e-6;
 
