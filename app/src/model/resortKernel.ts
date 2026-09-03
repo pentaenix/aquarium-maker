@@ -9,11 +9,17 @@ import {
   type ShapeCornerKey,
 } from './settings';
 
-const KERNEL_ABI_VERSION = 7;
+const KERNEL_ABI_VERSION = 11;
 const WORLD_UNITS_PER_METRE = 16;
 const EPSILON = 1e-6;
 
-type KernelMaterial = 'structure' | 'sand' | 'water-volume' | 'water-surface' | 'glass';
+type KernelMaterial =
+  | 'structure'
+  | 'sand'
+  | 'water-volume'
+  | 'water-surface'
+  | 'glass'
+  | 'tunnel-frame';
 
 interface KernelMesh {
   material: KernelMaterial;
@@ -286,6 +292,9 @@ function materialFor(tag: KernelMaterial): THREE.Material {
   });
   if (tag === 'sand') return new THREE.MeshStandardMaterial({
     name: 'KERNEL_Sand_Flat', color: 0xc8ad79, roughness: 0.92,
+  });
+  if (tag === 'tunnel-frame') return new THREE.MeshStandardMaterial({
+    name: 'KERNEL_TunnelFrame', color: 0x7a8999, metalness: 0.45, roughness: 0.38,
   });
   return new THREE.MeshStandardMaterial({
     name: 'KERNEL_Structure', color: 0x4a5158, metalness: 0.4, roughness: 0.42,
