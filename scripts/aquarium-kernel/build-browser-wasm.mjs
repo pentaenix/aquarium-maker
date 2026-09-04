@@ -25,6 +25,7 @@ execFileSync('em++', [
   join(resortRoot, 'shared/aquarium_geometry/src/GeometryBuilder.cpp'),
   join(resortRoot, 'shared/aquarium_geometry/src/Kernel.cpp'),
   join(resortRoot, 'shared/aquarium_geometry/src/Tunnel.cpp'),
+  join(resortRoot, 'shared/aquarium_geometry/src/TunnelFloorGeometry.cpp'),
   join(resortRoot, 'shared/aquarium_geometry/src/TunnelGeometry.cpp'),
   join(resortRoot, 'src/core/config/Json.cpp'),
   join(resortRoot, 'src/gameplay/world3d/aquarium/construction/AquariumDesign.cpp'),
