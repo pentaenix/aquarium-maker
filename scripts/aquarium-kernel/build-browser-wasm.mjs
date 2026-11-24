@@ -29,6 +29,7 @@ execFileSync('em++', [
   join(resortRoot, 'shared/aquarium_geometry/src/TunnelGeometry.cpp'),
   join(resortRoot, 'src/core/config/Json.cpp'),
   join(resortRoot, 'src/gameplay/world3d/aquarium/construction/AquariumDesign.cpp'),
+  join(resortRoot, 'src/gameplay/world3d/aquarium/decorations/AquariumDecoration.cpp'),
   join(resortRoot, 'tools/aquarium_geometry_wasm/AquariumGeometryJsonAdapter.cpp'),
   join(resortRoot, 'tools/aquarium_geometry_wasm/WasmBindings.cpp'),
   '--bind',

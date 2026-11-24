@@ -1,0 +1,11 @@
+{
+  "repository": "aquarium-maker",
+  "date": "2026-11-24",
+  "originalHead": "05478940bcfc0b90f86cb9144bfe6817053c5225",
+  "originalBranch": "codex/aquarium-construction-milestone-5",
+  "snapshotBranch": "backup/resort-2026-11-24",
+  "includedPaths": 37,
+  "excluded": "Ignored files, build outputs, generated exports/caches, and local runtime saves are not part of this source snapshot.",
+  "conflictedWorktree": false,
+  "largeAssetsInRelease": false
+}

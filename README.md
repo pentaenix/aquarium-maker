@@ -55,6 +55,8 @@ ABI 13 additionally keeps clipped sand and navigation polygons valid when a
 tunnel passes between independently rounded corners.
 ABI 14 supports three- and four-exit connected tunnel junctions while keeping
 independent tunnel shells at least one clear walking-grid tile apart.
+ABI 15 shares Resort's expanded construction limits: 4–22 half-cell height steps
+and 0–18 half-cell below-floor depth steps.
 The maker's freeform passage controls still use its advanced generator until a
 separate discrete compatibility mapper is completed.
 Advanced terrain, asymmetric arms, mixed corners, solid walls, decor, and the

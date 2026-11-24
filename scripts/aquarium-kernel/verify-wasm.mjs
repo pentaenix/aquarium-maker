@@ -36,6 +36,7 @@ const sourceArguments = [
   join(resortRoot, "shared/aquarium_geometry/src/TunnelGeometry.cpp"),
   join(resortRoot, "src/core/config/Json.cpp"),
   join(resortRoot, "src/gameplay/world3d/aquarium/construction/AquariumDesign.cpp"),
+  join(resortRoot, "src/gameplay/world3d/aquarium/decorations/AquariumDecoration.cpp"),
   join(resortRoot, "tools/aquarium_geometry_wasm/AquariumGeometryJsonAdapter.cpp"),
   join(resortRoot, "tools/aquarium_geometry_wasm/WasmBindings.cpp"),
 ];
@@ -69,7 +70,7 @@ for (const name of goldenFiles) {
   const nativeResult = JSON.parse(execFileSync(nativeDump, [goldenPath], { encoding: "utf8" }).trim());
   const wasmResult = JSON.parse(kernelModule.buildAquariumDocument(designJson));
   assert.deepStrictEqual(wasmResult, nativeResult, `native and WASM diverged for ${name}`);
-  assert.equal(wasmResult.kernelAbiVersion, 14);
+  assert.equal(wasmResult.kernelAbiVersion, 15);
   assert.equal(wasmResult.designSchemaVersion, 5);
   assert.equal(wasmResult.valid, true);
   results.push({ name, designJson, result: wasmResult });
@@ -77,7 +78,7 @@ for (const name of goldenFiles) {
 
 const rectangle = results.find(({ name }) => name === "rectangle-even.aquarium.json");
 assert.ok(rectangle);
-assert.equal(rectangle.result.contentHash, "fnv1a64:a7c4b0150a3c90e3");
+assert.equal(rectangle.result.contentHash, "fnv1a64:6e67b9b4c58cc66e");
 assert.equal(rectangle.result.statistics.vertexCount, 188);
 assert.equal(rectangle.result.statistics.collisionCellCount, 24);
 
